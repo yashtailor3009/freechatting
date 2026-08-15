@@ -4,6 +4,7 @@ import Conversation from "../models/Conversation.js";
 import cloudinary from "../config/cloudinary.js";
 import { Readable } from "stream";
 import Message from "../models/Message.js";
+import { handleConversationEvent } from "../socket/socketManager.js";
 
 //Helper: find convo betweern two users
 async function findConversation(userId: string, otherId: string) {
@@ -158,15 +159,18 @@ export const deleteConversation = async (req: AuthRequest, res: Response) => {
             return;
         }
 
-    //Check if user is part of the conversation
-        const isParticipants = conversation.participants.some((p)=> String(p) === userId)
-        if(!isParticipants){
-            res.status(404).json({success: false, message: "Coversation not found"});
-            return;
-        }
+        //Check if user is part of the conversation
+            const isParticipants = conversation.participants.some((p)=> String(p) === userId)
+            if(!isParticipants){
+                res.status(404).json({success: false, message: "Coversation not found"});
+                return;
+            }
 
         // Notify other participants before deleting
-        
+        await handleConversationEvent(userId, String(conversationId), {type: "chat_deleted", conversationId})
+
+        //Delete all messages in the conversation
+        await Message.deleteMany({conversationId})
 
         //Delete the conversation itself
         await Conversation.findByIdAndDelete(conversationId);
