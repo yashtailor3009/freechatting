@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import cloudinary from "../config/cloudinary.js";
 import { resolve } from "node:path";
 import { Readable } from "node:stream";
+import { broadcastUserUpdate } from "../socket/socketManager.js";
 // Get all Users
 
 export const getUsers = async (req: AuthRequest, res: Response) => {
@@ -92,5 +93,9 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
    }
 
    const updated = await User.findByIdAndUpdate(req.user!.id, updateData, {returnDocument : "after"})
+
+   if(updated){
+      broadcastUserUpdate(updated)
+   }
    res.json({success: true, user: updated})
 }
