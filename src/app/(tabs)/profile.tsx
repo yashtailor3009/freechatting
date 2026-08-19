@@ -1,22 +1,14 @@
-import { styles } from "@/assets/styles/ProfileScreen.styles";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { useEffect, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Platform,
-  ScrollView,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import {ActivityIndicator,Alert,Platform,ScrollView,Text,TouchableOpacity,View,} from "react-native";
 import { TextInput } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { styles } from "../../../assets/styles/ProfileScreen.styles";
 import Avatar from "../../../components/Avatar";
 import { Colors } from "../../../constants/Colors";
-import { api, useApp } from "../../../constants/context/AppContext";
+import { api, useApp } from "../../../context/AppContext";
 
 export default function profile() {
   const { auth, logout, updateUser } = useApp();
@@ -27,9 +19,11 @@ export default function profile() {
   const [profileBio, setProfileBio] = useState(auth.user?.bio || " ");
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [savedAvatar,setSavedAvatar] = useState<string | null>(user?.avatar || null)
+  const [savedAvatar, setSavedAvatar] = useState<string | null>(
+    user?.avatar || null,
+  );
 
-  const displayAvatar = avatarUri || savedAvatar || user?.avatar
+  const displayAvatar = avatarUri || savedAvatar || user?.avatar;
 
   const pickAvatar = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -60,34 +54,37 @@ export default function profile() {
       formData.append("handle", profileHandle);
       formData.append("bio", profileBio);
       if (avatarUri) {
-  if (Platform.OS === "web") {
-    const response = await fetch(avatarUri);
-    const blob = await response.blob();
+        if (Platform.OS === "web") {
+          const response = await fetch(avatarUri);
+          const blob = await response.blob();
 
-    formData.append("avatar", blob, "avatar.jpg");
-  } else {
-    formData.append("avatar", {
-      uri: avatarUri,
-      type: "image/jpeg",
-      name: "avatar.jpg",
-    } as any);
-  }
-}
+          formData.append("avatar", blob, "avatar.jpg");
+        } else {
+          formData.append("avatar", {
+            uri: avatarUri,
+            type: "image/jpeg",
+            name: "avatar.jpg",
+          } as any);
+        }
+      }
 
-      const {data} = await api.put('api/users/profile', formData, {
-        headers: {"Content-Type": "multipart/form-data"}
-      })
-      if(data.success){
-        await updateUser(data.user)
-        if(data.user.avatar) setSavedAvatar(data.user.avatar)
-          Alert.alert("Success", "Proflie updated! ")
-        setEditMode(false)
-        setAvatarUri(null)
+      const { data } = await api.put("api/users/profile", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      if (data.success) {
+        await updateUser(data.user);
+        if (data.user.avatar) setSavedAvatar(data.user.avatar);
+        Alert.alert("Success", "Proflie updated! ");
+        setEditMode(false);
+        setAvatarUri(null);
       }
     } catch (err: any) {
-      Alert.alert("Error", err?.response?.data?.message || "Failed to update profile");
-    }finally{
-      setLoading(false)
+      Alert.alert(
+        "Error",
+        err?.response?.data?.message || "Failed to update profile",
+      );
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -120,24 +117,24 @@ export default function profile() {
     }
   };
 
-  const getUser = async()=>{
+  const getUser = async () => {
     try {
-      const {data} = await api.get("/api/users/profile")
-      setProfileName(data.user.name)
-      setProfileHandle(data.user.handle)
-      setProfileBio(data.user.bio)
-      if(data.user.avatar){
-        setSavedAvatar(data.user.avatar)
-        setAvatarUri(null)
+      const { data } = await api.get("/api/users/profile");
+      setProfileName(data.user.name);
+      setProfileHandle(data.user.handle);
+      setProfileBio(data.user.bio);
+      if (data.user.avatar) {
+        setSavedAvatar(data.user.avatar);
+        setAvatarUri(null);
       }
     } catch (err: any) {
       console.log(err.message);
     }
-  }
+  };
 
-  useEffect(()=>{
-    getUser()
-  },[])
+  useEffect(() => {
+    getUser();
+  }, []);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
