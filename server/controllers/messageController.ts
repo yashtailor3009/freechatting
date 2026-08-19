@@ -35,16 +35,20 @@ export const getOrCreateConversation = async (
     await conversation.populate("participants","name email handle avatar isOnline lastSeen");
   }
 
-  const other = (conversation.participants as any[]).find((p: any) => String(p._id !== userId));
+  const other = (conversation.participants as any[]).find(
+  (p: any) => p._id.toString() !== userId
+);
 
-  res.json({
-    success: true,
-    conversation: {_id: conversation._id, participant: other, lastMessage: conversation.lastMessage},
-  })
 
-  return res.status(200).json(conversation);
+return res.status(200).json({
+  success: true,
+  conversation: {
+    _id: conversation._id,
+    participant: other,
+    lastMessage: conversation.lastMessage,
+  },
+});
 };
-
 // Get all conversation for the current user
 export const getConversations = async (req: AuthRequest, res: Response) => {
     const userId = req.user!.id;
@@ -100,14 +104,21 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
     }
 
     let conversation;
-    if(conversation){
-        conversation = await Conversation.findOne({_id: conversationId, participants: {$in:[senderId]}})
-    } else{
-        conversation = await findConversation(senderId, receiverId)
-        if(!conversation){
-            conversation = await Conversation.create({participants: [senderId, receiverId]})
-        }
-    }
+
+if (conversationId) {
+  conversation = await Conversation.findOne({
+    _id: conversationId,
+    participants: { $in: [senderId] },
+  });
+} else {
+  conversation = await findConversation(senderId, receiverId);
+
+  if (!conversation) {
+    conversation = await Conversation.create({
+      participants: [senderId, receiverId],
+    });
+  }
+}
 
     if(!conversation){
         res.status(404).json({success: false, message: "Coversation not found"});

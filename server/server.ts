@@ -36,9 +36,10 @@ app.use((err: any,_req: Request, res: Response, _next: NextFunction)=>{
 })
 
 //HTTP server and attach WebSocket
-const server = http.createServer(app)
-initSocketServer(server)
+const server = http.createServer(app);
 
-app.listen(port, () => {
-    console.log(`Server is running at http://localhost:${port}`);
+initSocketServer(server);
+
+server.listen(port, () => {
+  console.log(`Server is running at http://localhost:${port}`);
 });

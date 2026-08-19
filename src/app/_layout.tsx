@@ -1,7 +1,7 @@
 import { Redirect, SplashScreen, Stack, useRoute, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import {GestureHandlerRootView} from 'react-native-gesture-handler'
-import { AppProvider } from "../../constants/context/AppContext";
+import { AppProvider } from "../../context/AppContext";
 import { ClerkLoaded, ClerkProvider, useAuth } from '@clerk/expo'
 import { tokenCache } from '@clerk/expo/token-cache'
 import { useEffect } from "react";
