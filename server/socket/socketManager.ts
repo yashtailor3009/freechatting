@@ -50,6 +50,104 @@ export function initSocketServer(server: any) {
     ws.on("message", (data: Buffer) => {
       try {
         const msg = JSON.parse(data.toString());
+
+        // CALL SIGNALING
+
+        if (msg.type === "call_offer") {
+          const { receiverId, conversationId, offer, callType } = msg;
+
+          if (conversationId) {
+            handleConversationEvent(userId, conversationId, {
+              type: "call_offer",
+              senderId: userId,
+              offer,
+              callType,
+            });
+          } else if (receiverId) {
+            const receiverWs = onlineUsers.get(receiverId);
+
+            if (receiverWs?.readyState === WebSocket.OPEN) {
+              receiverWs.send(
+                JSON.stringify({
+                  type: "call_offer",
+                  senderId: userId,
+                  offer,
+                  callType,
+                }),
+              );
+            }
+          }
+        }
+
+        if (msg.type === "call_answer") {
+          const { receiverId, conversationId, answer } = msg;
+
+          if (conversationId) {
+            handleConversationEvent(userId, conversationId, {
+              type: "call_answer",
+              senderId: userId,
+              answer,
+            });
+          } else if (receiverId) {
+            const receiverWs = onlineUsers.get(receiverId);
+
+            if (receiverWs?.readyState === WebSocket.OPEN) {
+              receiverWs.send(
+                JSON.stringify({
+                  type: "call_answer",
+                  senderId: userId,
+                  answer,
+                }),
+              );
+            }
+          }
+        }
+
+        if (msg.type === "ice_candidate") {
+          const { receiverId, conversationId, candidate } = msg;
+
+          if (conversationId) {
+            handleConversationEvent(userId, conversationId, {
+              type: "ice_candidate",
+              senderId: userId,
+              candidate,
+            });
+          } else if (receiverId) {
+            const receiverWs = onlineUsers.get(receiverId);
+
+            if (receiverWs?.readyState === WebSocket.OPEN) {
+              receiverWs.send(
+                JSON.stringify({
+                  type: "ice_candidate",
+                  senderId: userId,
+                  candidate,
+                }),
+              );
+            }
+          }
+        }
+
+        if (msg.type === "call_end") {
+          const { receiverId, conversationId } = msg;
+
+          if (conversationId) {
+            handleConversationEvent(userId, conversationId, {
+              type: "call_end",
+              senderId: userId,
+            });
+          } else if (receiverId) {
+            const receiverWs = onlineUsers.get(receiverId);
+
+            if (receiverWs?.readyState === WebSocket.OPEN) {
+              receiverWs.send(
+                JSON.stringify({
+                  type: "call_end",
+                  senderId: userId,
+                }),
+              );
+            }
+          }
+        }
         //Forward message to receiver(s)
         if (msg.type === "message") {
           const { receiverId, conversationId, payload } = msg;

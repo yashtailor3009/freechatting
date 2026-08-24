@@ -54,9 +54,9 @@ export default function MessagesScreen() {
     : conversations;
 
   const openConvo = (c: Conversation) => {
-    setSelectedConversation(c)
-    router.push(`/chat/${c._id}`);
-  };
+  setSelectedConversation(c);
+  router.push(`/chat/${c._id}`);
+};
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>

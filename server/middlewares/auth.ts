@@ -1,74 +1,108 @@
-import { NextFunction, Request, Response } from "express";
-import {
-  clerkMiddleware,
-  clerkClient,
-  requireAuth,
-  getAuth,
-} from "@clerk/express";
+import { Request, Response, NextFunction } from "express";
+import { getAuth, clerkClient } from "@clerk/express";
 import User from "../models/User.js";
 
 export interface AuthRequest extends Request {
-  user?: { id: string; name: string; email: string };
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+  };
 }
 
 export const authMiddleware = async (
   req: AuthRequest,
   res: Response,
-  next: NextFunction,
+  next: NextFunction
 ) => {
   try {
-    const { isAuthenticated, userId } = getAuth(req);
-    if (!userId) {
-      res.status(401).json({ success: false, message: "Unauthenticated" });
-      return;
+    console.log("\n========== AUTH CHECK ==========");
+    console.log("Path:", req.method, req.originalUrl);
+    console.log(
+      "Authorization:",
+      req.headers.authorization ? "TOKEN RECEIVED" : "NO TOKEN RECEIVED"
+    );
+
+    const { isAuthenticated, userId, sessionId } = getAuth(req);
+
+    console.log("User ID:", userId);
+    console.log("Session ID:", sessionId);
+    console.log("Authenticated:", isAuthenticated);
+    
+    if (!isAuthenticated || !userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthenticated",
+      });
     }
 
-    // check if user exists locally in MongoDB
     let localUser = await User.findById(userId);
 
     if (!localUser) {
-      // Lazy sync : Fetch details from Clerk API
+      console.log("Syncing Clerk user:", userId);
+
       const clerkUser = await clerkClient.users.getUser(userId);
-      const email = clerkUser.emailAddresses[0]?.emailAddress;
+
+      const email =
+        clerkUser.emailAddresses[0]?.emailAddress || "";
+
       const name =
-        [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ") ||
+        [clerkUser.firstName, clerkUser.lastName]
+          .filter(Boolean)
+          .join(" ") ||
         clerkUser.username ||
         "Anonymous";
 
-      // create fallback handle
-      const handle =
+      const baseHandle =
         clerkUser.username ||
-        clerkUser.emailAddresses[0]?.emailAddress.split("@")[0] ||
-        userId;
+        email.split("@")[0] ||
+        `user${userId.slice(-6)}`;
 
-      // Ensure unique handle in DB by appending random suffix if needed
-      let finalHandle = handle.toLowerCase().replace(/[^a-z0-9]/g, "");
-      let handleExists = await User.findOne({ handle: finalHandle });
+      let finalHandle = baseHandle
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+
+      if (!finalHandle) {
+        finalHandle = `user${Date.now()}`;
+      }
+
+      let handleExists = await User.findOne({
+        handle: finalHandle,
+      });
+
       let counter = 1;
+
       while (handleExists) {
         const testHandle = `${finalHandle}${counter}`;
-        handleExists = await User.findOne({ handle: testHandle });
+
+        handleExists = await User.findOne({
+          handle: testHandle,
+        });
+
         if (!handleExists) {
           finalHandle = testHandle;
           break;
         }
+
         counter++;
       }
+
       localUser = await User.create({
         _id: userId,
         name,
-        email: email.toLowerCase(),
+        email,
         handle: finalHandle,
         avatar: clerkUser.imageUrl || "",
         bio: "Hey there! I am using InstaChat.",
         isOnline: true,
         lastSeen: new Date(),
       });
+
+      console.log("User created:", localUser._id);
     }
 
-    // Attach user info to request for compatibility
     req.user = {
-      id: localUser._id,
+      id: String(localUser._id),
       name: localUser.name,
       email: localUser.email,
     };
@@ -76,8 +110,10 @@ export const authMiddleware = async (
     next();
   } catch (error) {
     console.error("Auth Middleware Error:", error);
-    res
-      .status(401)
-      .json({ sucess: false, message: "Invalid or expired token" });
+
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired token",
+    });
   }
 };

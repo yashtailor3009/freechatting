@@ -1,71 +1,78 @@
 import { Response } from "express";
 import { AuthRequest } from "../middlewares/auth.js";
-import cloudinary from "../config/cloudinary.js";
-import { Readable } from "stream";
 import Story from "../models/Story.js";
+import User from "../models/User.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-//Create a new story
-export const createStory = async(req: AuthRequest, res: Response) => {
+export const createStory = async (req: AuthRequest, res: Response) => {
     const userId = req.user!.id;
     const file = req.file;
 
-    if(!file){
-        res.status(400).json({ success: false, message: "Media file is required"});
+    if (!file) {
+        res.status(400).json({ success: false, message: "Media file is required" });
         return;
     }
 
     try {
-        const resourceType = file.mimetype.startsWith("video") ? "video" : "image";
-            
-            const uploadPromise = new Promise<{ secure_url: string }>((resolve, reject) => {
-            const uploadStream = cloudinary.uploader.upload_stream(
-                { folder: "insta_chat_stories", resource_type: resourceType},
-                (error, result) => {
-                if (error) reject(error);
-                    else resolve(result as any);
-            }
-            );
-        
-            const readableStream = new Readable();
-            readableStream.push(file.buffer);
-            readableStream.push(null);
-            readableStream.pipe(uploadStream);
-        });
-        
-        const result = await uploadPromise;
-        
+        // ✅ FIX: File ko local 'uploads' folder mein save karo
+        const uploadsDir = path.join(process.cwd(), "uploads");
+        if (!fs.existsSync(uploadsDir)) {
+            fs.mkdirSync(uploadsDir, { recursive: true });
+        }
+
+        const extension = file.mimetype.startsWith("video") ? "mp4" : "jpg";
+        const fileName = `${Date.now()}-story.${extension}`;
+        const filePath = path.join(uploadsDir, fileName);
+        fs.writeFileSync(filePath, file.buffer);
+
         const story = await Story.create({
             user: userId,
-            mediaUrl: result.secure_url,
-            mediaType: resourceType,
-        })
+            mediaUrl: `http://localhost:3000/uploads/${fileName}`,
+            mediaType: extension === "mp4" ? "video" : "image",
+        });
 
-        await story.populate("user", "name avata handle")
-        res.status(201).json({success: true, story})
+        // ✅ Fetch real user info
+        const user = await User.findById(userId).select("name avatar handle");
 
+        res.status(201).json({ success: true, story: { ...story.toObject(), user } });
     } catch (err: any) {
-        console.error ("Story upload error ", err);
-        res.status(500).json({success: false,message:"Story upload failed"});
-        return
+        console.error("Story upload error ", err);
+        res.status(500).json({ success: false, message: "Story upload failed" });
+        return;
     }
-}
+};
 
-//Get all recent stories (grouped by user)
-export const getStories = async(req: AuthRequest, res: Response) => {
-    const stories = await Story.find().sort({createdAt: -1}).populate("user", "name avata handle");
+export const getStories = async (req: AuthRequest, res: Response) => {
+    try {
+        const stories = await Story.find().sort({ createdAt: -1 });
 
-    //Group stories by user
-    const grouped: any = {};
-        stories.forEach((s: any) => {
-            const uid = String(s.user._id);
-            if(!grouped[uid]){
+        if (stories.length === 0) {
+            return res.status(200).json({ success: true, stories: [] });
+        }
+
+        const grouped: any = {};
+
+        for (const s of stories) {
+            const uid = String(s.user);
+
+            if (!grouped[uid]) {
+                const realUser = await User.findById(uid).select("name avatar handle");
                 grouped[uid] = {
-                    user: s.user,
-                    stories:[]
-                }
+                    user: realUser || { _id: uid, name: "User", avatar: "", handle: "" },
+                    stories: [],
+                };
             }
-        grouped[uid].stories.push(s);
-    })
-    res.json({success: true, stories: Object.values(grouped)})
-}
+            grouped[uid].stories.push(s);
+        }
+
+        res.json({ success: true, stories: Object.values(grouped) });
+    } catch (error) {
+        console.error("Error fetching stories:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch stories" });
+    }
+};

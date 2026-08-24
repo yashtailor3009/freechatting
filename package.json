@@ -6,6 +6,7 @@
     "@clerk/expo": "^4.2.5",
     "@expo/ui": "~57.0.7",
     "@expo/vector-icons": "^15.0.2",
+    "@react-native-async-storage/async-storage": "^3.1.1",
     "axios": "^1.19.0",
     "expo": "~57.0.7",
     "expo-auth-session": "~57.0.6",
@@ -36,9 +37,12 @@
     "react-native-screens": "4.25.2",
     "react-native-svg": "^15.15.5",
     "react-native-web": "~0.21.0",
-    "react-native-worklets": "0.10.0"
+    "react-native-webrtc": "^124.0.8",
+    "react-native-worklets": "0.10.0",
+    "webrtc-adapter": "^9.0.6"
   },
   "devDependencies": {
+    "@types/multer": "^2.2.0",
     "@types/react": "~19.2.2",
     "typescript": "~6.0.3"
   },

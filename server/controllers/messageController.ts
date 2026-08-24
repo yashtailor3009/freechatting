@@ -4,9 +4,15 @@ import Conversation from "../models/Conversation.js";
 import cloudinary from "../config/cloudinary.js";
 import { Readable } from "stream";
 import Message from "../models/Message.js";
+import User from "../models/User.js";
 import { handleConversationEvent } from "../socket/socketManager.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
-//Helper: find convo betweern two users
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 async function findConversation(userId: string, otherId: string) {
   return Conversation.findOne({
     $and: [
@@ -17,7 +23,6 @@ async function findConversation(userId: string, otherId: string) {
   } as any);
 }
 
-//Start or get a conversation with a user
 export const getOrCreateConversation = async (
   req: AuthRequest,
   res: Response,
@@ -28,166 +33,296 @@ export const getOrCreateConversation = async (
   let conversation: any = await findConversation(userId, targetUserId);
 
   if (conversation) {
-    await conversation.populate("participants","name email handle avatar isOnline lastSeen");
     await conversation.populate("lastMessage");
   } else {
-    conversation = await Conversation.create({participants: [userId, String(targetUserId)]});
-    await conversation.populate("participants","name email handle avatar isOnline lastSeen");
-  }
-
-  const other = (conversation.participants as any[]).find(
-  (p: any) => p._id.toString() !== userId
-);
-
-
-return res.status(200).json({
-  success: true,
-  conversation: {
-    _id: conversation._id,
-    participant: other,
-    lastMessage: conversation.lastMessage,
-  },
-});
-};
-// Get all conversation for the current user
-export const getConversations = async (req: AuthRequest, res: Response) => {
-    const userId = req.user!.id;
-    const conversations = await Conversation.find ({participants: {$in: [userId]}}).populate("participants", "name email handle avatar isOnline lastSeen").populate("lastMessage").sort({updatedAt: -1})
-    const shaped = conversations.map((c) => {
-        const other = (c.participants as any[]).find((p: any)=> String(p._id) !== userId);
-        return {_id: c._id, isGroup: false, participant: other, lastMessage: c.lastMessage, updatedAt: c.updatedAt}
-    })
-    res.json({success: true, conversations: shaped})
-};
-// Send a message
-export const sendMessage = async (req: AuthRequest, res: Response) => {
-    const senderId = req.user!.id;
-    const {receiverId, conversationId, text} = req.body;
-    const file = req.file;
-
-    if((!receiverId && !conversationId) || (!text?.trim() && !file)){
-        res.status(400).json({success: false, message: "receiverId/conversationId and (text or file) are required"});
-        return;
-    }
-
-    let mediaUrl = "";
-    let mediaType: "image" | "video" | undefined;
-
-    if(file){
-        try {
-            const resourceType = file.mimetype.startsWith("video") ? "video" : "image";
-            mediaType = resourceType;
-            
-            const uploadPromise = new Promise<{ secure_url: string }>((resolve, reject) => {
-            const uploadStream = cloudinary.uploader.upload_stream(
-                { folder: "insta_chat_avatars", resource_type: resourceType},
-                (error, result) => {
-                if (error) reject(error);
-                 else resolve(result as any);
-            }
-          );
-        
-          const readableStream = new Readable();
-          readableStream.push(file.buffer);
-          readableStream.push(null);
-          readableStream.pipe(uploadStream);
-        });
-        
-        const result = await uploadPromise;
-        mediaUrl = result.secure_url;
-                 
-        } catch (err) {
-            console.error ("Cloudinary upload error: ", err);
-            res.status(500).json({success: false,message:"Media upload failed"});
-                return
-            }
-    }
-
-    let conversation;
-
-if (conversationId) {
-  conversation = await Conversation.findOne({
-    _id: conversationId,
-    participants: { $in: [senderId] },
-  });
-} else {
-  conversation = await findConversation(senderId, receiverId);
-
-  if (!conversation) {
     conversation = await Conversation.create({
-      participants: [senderId, receiverId],
+      participants: [userId, String(targetUserId)]
     });
   }
-}
 
-    if(!conversation){
-        res.status(404).json({success: false, message: "Coversation not found"});
-        return
-    }
+  const otherId = (conversation.participants as string[]).find(
+    (p: string) => String(p) !== userId
+  ) || "";
 
-    const message = await Message.create({
-        sender: senderId,
-        receiver: receiverId || conversation.participants.find((p)=> String(p) !== senderId),
-        conversationId: conversation._id,
-        text: text?.trim(),
-        mediaUrl: mediaUrl || undefined,
-        mediaType,
-    })
+  const otherUser = await User.findById(otherId).select("name avatar handle isOnline lastSeen");
 
-    conversation.lastMessage = message._id as any;
-    conversation.updatedAt = new Date();
-    await conversation.save();
-
-    res.status(201).json({success: true, message});
+  return res.status(200).json({
+    success: true,
+    conversation: {
+      _id: conversation._id,
+      participantId: otherId,
+      participant: otherUser, 
+      lastMessage: conversation.lastMessage || null,
+      updatedAt: conversation.updatedAt,
+    },
+  });
 };
 
-// Get all messages in a conversation
-export const getMessages = async (req: AuthRequest, res: Response) => {
-    const userId = req.user!.id;
-    const {conversationId} = req.params;
+export const getConversations = async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  
+  const conversations = await Conversation.find({
+    participants: { $in: [userId] }
+  })
+    .populate("lastMessage")
+    .sort({ updatedAt: -1 });
 
-    const conversation = await Conversation.findOne({_id: conversationId,participants: {$in: [userId]}})
-    if(!conversation){
-        res.status(404).json({success: false, message: "Coversation not found"});
-        return
-    }
+  const shaped = await Promise.all(conversations.map(async (c) => {
+    const otherId = (c.participants as string[]).find(
+      (p: string) => String(p) !== userId
+    ) || "";
 
-    const messages = await Message.find({conversationId}).sort({createdAt: 1});
-    await Message.updateMany({conversationId, receiver: userId, read:false},{read: true})
+    const otherUser = await User.findById(otherId).select("name avatar handle isOnline lastSeen");
 
-    res.json({success: true, messages});
+    return {
+      _id: c._id,
+      isGroup: false,
+      participantId: otherId,
+      participant: otherUser,
+      lastMessage: c.lastMessage || null,
+      updatedAt: c.updatedAt
+    };
+  }));
+
+  res.json({ success: true, conversations: shaped });
 };
 
-// Delete a conversation
-export const deleteConversation = async (req: AuthRequest, res: Response) => {
-    const userId = req.user!.id;
-    const {conversationId} = req.params;
+export const getConversationById = async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { conversationId } = req.params;
 
+  try {
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: { $in: [userId] }
+    }).populate("lastMessage");
+
+    if (!conversation) {
+      return res.status(404).json({ success: false, message: "Conversation not found" });
+    }
+
+    const otherId = (conversation.participants as string[]).find(
+      (p: string) => String(p) !== userId
+    ) || "";
+
+    const otherUser = await User.findById(otherId).select("name avatar handle isOnline lastSeen");
+
+    return res.json({
+      success: true,
+      conversation: {
+        _id: conversation._id,
+        participantId: otherId,
+        participant: otherUser,
+        lastMessage: conversation.lastMessage || null,
+        updatedAt: conversation.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching conversation:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+export const sendMessage = async (req: AuthRequest, res: Response) => {
+  const senderId = req.user!.id;
+  const { receiverId, conversationId, text } = req.body;
+  const file = req.file;
+
+  if ((!receiverId && !conversationId) || (!text?.trim() && !file)) {
+    res.status(400).json({ success: false, message: "receiverId/conversationId and (text or file) are required" });
+    return;
+  }
+
+  let mediaUrl = "";
+  let mediaType: "image" | "video" | undefined;
+
+  if (file) {
     try {
-        const conversation = await Conversation.findById(conversationId);
-        if(!conversation){
-            res.status(404).json({success: false, message: "Coversation not found"});
-            return;
-        }
+      const resourceType = file.mimetype.startsWith("video") ? "video" : "image";
+      mediaType = resourceType;
 
-        //Check if user is part of the conversation
-            const isParticipants = conversation.participants.some((p)=> String(p) === userId)
-            if(!isParticipants){
-                res.status(404).json({success: false, message: "Coversation not found"});
-                return;
-            }
+      // ✅ FIX: Ye 100% 'server/uploads' folder mein save karega
+      const uploadsDir = path.join(process.cwd(), "uploads");
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
 
-        // Notify other participants before deleting
-        await handleConversationEvent(userId, String(conversationId), {type: "chat_deleted", conversationId})
+      const safeFileName = file.originalname && file.originalname !== "" ? file.originalname : (resourceType === "video" ? "video.mp4" : "image.jpg");
+      const fileName = `${Date.now()}-${safeFileName}`;
+      const filePath = path.join(uploadsDir, fileName);
+      fs.writeFileSync(filePath, file.buffer);
 
-        //Delete all messages in the conversation
-        await Message.deleteMany({conversationId})
+      mediaUrl = `http://localhost:3000/uploads/${fileName}`;
 
-        //Delete the conversation itself
-        await Conversation.findByIdAndDelete(conversationId);
-
-        res.json({success: true, message: "Chat deleted successfully "});
-    } catch (error) {
-        res.status(500).json({success: false, message:"Server error "})
+    } catch (err) {
+      console.error("Error saving media:", err);
+      return res.status(500).json({ success: false, message: "Media upload failed" });
     }
+  }
+
+  let conversation;
+
+  if (conversationId) {
+    conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: { $in: [senderId] },
+    });
+  } else {
+    conversation = await findConversation(senderId, receiverId);
+
+    if (!conversation) {
+      conversation = await Conversation.create({
+        participants: [senderId, receiverId],
+      });
+    }
+  }
+
+  if (!conversation) {
+    res.status(404).json({ success: false, message: "Conversation not found" });
+    return;
+  }
+
+  const validReceiverId = receiverId || 
+    (conversation.participants as string[]).find((p: string) => String(p) !== senderId) || 
+    "";
+
+  if (!validReceiverId) {
+    res.status(400).json({ success: false, message: "Receiver ID is required" });
+    return;
+  }
+
+  const message = await Message.create({
+    sender: senderId,
+    receiver: validReceiverId,
+    conversationId: conversation._id,
+    text: text?.trim() || "",
+    mediaUrl: mediaUrl || undefined,
+    mediaType,
+  });
+
+  conversation.lastMessage = message._id as any;
+  conversation.updatedAt = new Date();
+  await conversation.save();
+
+  await conversation.populate("lastMessage");
+
+  res.status(201).json({
+    success: true,
+    message: {
+      ...message.toObject(),
+    }
+  });
+};
+
+export const getMessages = async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { conversationId } = req.params;
+
+  // Force no-cache headers on the response to prevent 304 errors
+  res.setHeader('Cache-Control', 'no-store');
+
+  try {
+    const conversation = await Conversation.findOne({
+      _id: conversationId,
+      participants: { $in: [userId] }
+    });
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: "Conversation not found"
+      });
+    }
+
+    // Fetch messages directly (No populate causing hangs)
+    const messages = await Message.find({ conversationId })
+      .sort({ createdAt: 1 });
+
+    // Mark as read
+    await Message.updateMany(
+      { conversationId, receiver: userId, read: false },
+      { read: true }
+    );
+
+    return res.json({
+      success: true,
+      messages,
+      conversation: {
+        _id: conversation._id,
+        participants: conversation.participants,
+        updatedAt: conversation.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching messages:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error fetching messages"
+    });
+  }
+};
+
+export const deleteMessage = async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { messageId } = req.params;
+
+  try {
+    const message = await Message.findById(messageId);
+
+    if (!message) {
+      return res.status(404).json({ success: false, message: "Message not found" });
+    }
+
+    // Sirf sender hi apna message delete kar sakta hai
+    if (message.sender !== userId) {
+      return res.status(403).json({ success: false, message: "Unauthorized to delete this message" });
+    }
+
+    // Message delete kar do
+    await message.deleteOne();
+
+    // Agar conversation ka lastMessage yeh tha, toh update karo
+    const conversation = await Conversation.findById(message.conversationId);
+    if (conversation && conversation.lastMessage?.toString() === messageId) {
+      conversation.lastMessage = undefined;
+      await conversation.save();
+    }
+
+    return res.json({ success: true, message: "Message deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting message:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+export const deleteConversation = async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const { conversationId } = req.params;
+
+  try {
+    const conversation = await Conversation.findById(conversationId);
+    
+    if (!conversation) {
+      res.status(404).json({ success: false, message: "Conversation not found" });
+      return;
+    }
+
+    const isParticipant = (conversation.participants as string[]).some(
+      (p: string) => String(p) === userId
+    );
+    
+    if (!isParticipant) {
+      res.status(404).json({ success: false, message: "Conversation not found" });
+      return;
+    }
+
+    await handleConversationEvent(userId, String(conversationId), { type: "chat_deleted", conversationId });
+    await Message.deleteMany({ conversationId });
+    await Conversation.findByIdAndDelete(conversationId);
+
+    res.json({ success: true, message: "Chat deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting conversation:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
 };

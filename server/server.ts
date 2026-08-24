@@ -8,38 +8,89 @@ import messageRouter from "./routes/messageRoutes.js";
 import storyRouter from "./routes/storyRoutes.js";
 import http from 'http'
 import { initSocketServer } from "./socket/socketManager.js";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// Connect to MongoDB
 await connectDB();
+app.use(cors());
 
-// Middleware
-app.use(cors())
-app.use(express.json());
-app.use(clerkMiddleware())
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:8081');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
+
+app.use(clerkMiddleware());
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
 
 const port = process.env.PORT || 3000;
 
 app.get('/', (req: Request, res: Response) => {
-    res.send('Server is Live!');
+  res.send('Server is Live!');
 });
 
-app.use("/api/users", userRouter)
-app.use("/api/messages", messageRouter)
-app.use("/api/stories", storyRouter)
+app.get('/health', (req: Request, res: Response) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
 
-//Error message
-app.use((err: any,_req: Request, res: Response, _next: NextFunction)=>{
-    console.error(err);
-    res.status(500).json({success: false, message: err?.message || "Something went wrong!"});
-})
+// ✅ FIX: Uploads folder ko absolute path se serve karo
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
-//HTTP server and attach WebSocket
+app.use("/api/users", userRouter);
+app.use("/api/messages", messageRouter);
+app.use("/api/stories", storyRouter);
+
+//  404 HANDLER 
+app.use((req: Request, res: Response) => {
+  res.status(404).json({
+    success: false,
+    message: `Route not found: ${req.method} ${req.path}`
+  });
+});
+
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('Error details:', {
+    message: err?.message,
+    stack: err?.stack,
+    name: err?.name
+  });
+  
+  res.status(err?.status || 500).json({
+    success: false,
+    message: err?.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err?.stack })
+  });
+});
+
 const server = http.createServer(app);
 
 initSocketServer(server);
 
 server.listen(port, () => {
-  console.log(`Server is running at http://localhost:${port}`);
+  console.log(`=================================`);
+  console.log(`🚀 Server is running at http://localhost:${port}`);
+  console.log(`📡 WebSocket server attached`);
+  console.log(`=================================`);
 });
+
+export default app;
