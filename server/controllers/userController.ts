@@ -1,101 +1,178 @@
+import { clerkClient } from "@clerk/express";
 import { Response } from "express";
-import type { AuthRequest } from "../middlewares/auth.js";
+import { AuthRequest } from "../middlewares/auth.js";
 import User from "../models/User.js";
-import cloudinary from "../config/cloudinary.js";
-import { resolve } from "node:path";
-import { Readable } from "node:stream";
-import { broadcastUserUpdate } from "../socket/socketManager.js";
-// Get all Users
 
-export const getUsers = async (req: AuthRequest, res: Response) => {
-   const users = await User.find({_id: {$ne: req.user!.id}}).select("name email handle avatar bio isOnline lastSeen")
-   res.json({success: true, users})
-}
-
-// Search users by name, email, or handle
-
-export const searchUsers = async (req: AuthRequest, res: Response) => {
-   const {query} = req.query;
-   if(!query || typeof query !== "string"){
-    res.json({success: true, users:[]})
-    return
-   }
-   const regex = new RegExp(query, "i");
-   const users = await User.find({
-    _id:{$ne : req.user!.id },
-    $or: [{name: regex}, {email: regex}, {handle: regex}]
-   }).select("name email handle avatar bio isOnline lastSeen").limit(20);
-
-   res.json({success: true, users})
-}
-
-// Get current user's Profile
-
+// Get current user's profile
 export const getProfile = async (req: AuthRequest, res: Response) => {
-   const user = await User.findById(req.user!.id);
-   if(!user){
-    res.status(404).json({success:false, message: "User not found"})
-   }
-   res.json({success: true, user})
-} 
+  try {
+    const userId = req.user!.id;
 
-//update profile (name, bio, handle, avatar)
+    // Try to find user in your database using _id
+    let user = await User.findById(userId);
+
+    if (!user) {
+      // If user doesn't exist, create from Clerk
+      const clerkUser = await clerkClient.users.getUser(userId);
+      user = await User.create({
+        _id: clerkUser.id,
+        name: clerkUser.fullName || clerkUser.username || "User",
+        email: clerkUser.emailAddresses[0]?.emailAddress || "",
+        handle: clerkUser.username || `user_${Date.now()}`,
+        avatar: clerkUser.imageUrl || "",
+        isOnline: false,
+        lastSeen: new Date(),
+      });
+    }
+
+    res.json({
+      success: true,
+      user,
+    });
+  } catch (error) {
+    console.error("Error fetching profile:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch profile",
+    });
+  }
+};
+
+// Get user by ID (for fetching participant details)
+export const getUserById = async (req: AuthRequest, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const userIdString = Array.isArray(userId) ? userId[0] : userId;
+
+    // Try to find user in your database using _id
+    let user = await User.findById(userIdString);
+
+    if (!user) {
+      // If not in your DB, fetch from Clerk
+      const clerkUser = await clerkClient.users.getUser(userIdString);
+      user = await User.create({
+        _id: clerkUser.id,
+        name: clerkUser.fullName || clerkUser.username || "User",
+        email: clerkUser.emailAddresses[0]?.emailAddress || "",
+        handle: clerkUser.username || `user_${Date.now()}`,
+        avatar: clerkUser.imageUrl || "",
+        isOnline: false,
+        lastSeen: new Date(),
+      });
+    }
+
+    res.json({
+      success: true,
+      user,
+    });
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch user",
+    });
+  }
+};
+
+// Get all users (for chat list)
+export const getUsers = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.id;
+
+    // Exclude current user, limit to 50 (using _id)
+    const users = await User.find({
+      _id: { $ne: userId },
+    })
+      .select("_id name handle avatar isOnline lastSeen")
+      .limit(50)
+      .sort({ name: 1 });
+
+    res.json({
+      success: true,
+      users,
+    });
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch users",
+    });
+  }
+};
+
+// Search users by name, handle, or email
+export const searchUsers = async (req: AuthRequest, res: Response) => {
+  try {
+    const { q } = req.query; // Get search query from query param
+    const userId = req.user!.id;
+
+    if (!q || typeof q !== "string" || q.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Search query is required",
+      });
+    }
+
+    const searchTerm = q.trim();
+
+    const users = await User.find({
+      $or: [
+        { name: { $regex: searchTerm, $options: "i" } },
+        { handle: { $regex: searchTerm, $options: "i" } },
+        { email: { $regex: searchTerm, $options: "i" } },
+      ],
+      _id: { $ne: userId }, // Exclude current user (using _id)
+    })
+      .select("_id name handle avatar isOnline lastSeen")
+      .limit(20)
+      .sort({ name: 1 });
+
+    res.json({
+      success: true,
+      users,
+    });
+  } catch (error) {
+    console.error("Error searching users:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to search users",
+    });
+  }
+};
+
+// Update current user's profile
 export const updateProfile = async (req: AuthRequest, res: Response) => {
-   console.log("========== UPDATE PROFILE ==========");
-  console.log(req.body);
-  console.log(req.file);
-    const {name, bio, handle} = req.body; 
+  try {
+    const userId = req.user!.id;
+    const { name, handle, bio } = req.body;
     const file = req.file;
 
-    if(handle){
-      const handleExists = await User.findOne({handle, _id: {$ne: req.user!.id}})
-      if(handleExists){
-         res.status(400).json({ success: false, message:"Handle already in use"});
-         return;
-      }
-    }
+    // Build update object
+    const updateData: any = {
+      updatedAt: new Date(),
+    };
 
-    let avatarUrl = "";
-    if (file){
-      try {
-         const uploadPromise = new Promise<{ secure_url: string }>((resolve, reject) => {
-  const uploadStream = cloudinary.uploader.upload_stream(
-    { folder: "insta_chat_avatars" },
-    (error, result) => {
-      if (error) reject(error);
-      else resolve(result as any);
-    }
-  );
+    if (name) updateData.name = name;
+    if (handle) updateData.handle = handle;
+    if (bio) updateData.bio = bio;
 
-  const readableStream = new Readable();
-  readableStream.push(file.buffer);
-  readableStream.push(null);
-  readableStream.pipe(uploadStream);
-});
+    // Use findByIdAndUpdate instead of findOneAndUpdate({ clerkId })
+    const user = await User.findByIdAndUpdate(userId, updateData, {
+      new: true, // Return updated document
+      upsert: true, // Create if doesn't exist
+      runValidators: true,
+    });
 
-      const result = await uploadPromise;
-      avatarUrl = result.secure_url;
-         
-      } catch (err) {
-         console.error ("Avatar upload error: ", err);
-         res.status(500).json({success: false,message:"Avatar upload failed"});
-         return
-      }
-      
-    }
-    const updateData : any = {
-      ...(name && {name}),
-      ...(bio !== undefined && {bio}),
-      ...(handle && {handle: handle.toLowerCase().trim()})
-    }
-    if(avatarUrl){
-      updateData.avatar = avatarUrl;
-   }
-
-   const updated = await User.findByIdAndUpdate(req.user!.id, updateData, {returnDocument : "after"})
-
-   if(updated){
-      broadcastUserUpdate(updated)
-   }
-   res.json({success: true, user: updated})
-}
+    res.json({
+      success: true,
+      message: "Profile updated successfully",
+      user,
+    });
+  } catch (error) {
+    console.error("Error updating profile:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update profile",
+    });
+  }
+};

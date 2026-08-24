@@ -26,7 +26,10 @@ export const styles = StyleSheet.create({
         paddingHorizontal: 14,
         paddingTop: 8,
     },
-    mediaWrapper: { padding: 4 },
+    mediaWrapper: { 
+        padding: 4, 
+        overflow: "hidden", // ✅ ADDED: Isse borderRadius work karega
+    },
     mediaImage: { width: 220, height: 180, borderRadius: 16 },
     mediaVideo: { width: 220, height: 160, borderRadius: 16 },
     msgText: {

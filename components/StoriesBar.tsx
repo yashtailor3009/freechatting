@@ -1,4 +1,4 @@
-import { View, Text, FlatList, TouchableOpacity, Alert } from "react-native";
+import { View, Text, FlatList, TouchableOpacity, Alert, Platform } from "react-native";
 import React, { useEffect, useState } from "react";
 import { styles } from "@/assets/styles/StoriesBar.styles";
 import { UserStory } from "../types";
@@ -15,21 +15,19 @@ interface StoriesBarProps {
 export default function StoriesBar({ onViewStory }: StoriesBarProps) {
   const [uploading, setUploading] = useState(false);
 
-  const { userStories, fetchStories} =useApp()
+  const { userStories, fetchStories } = useApp();
 
-  useEffect(()=> {
-    fetchStories()
-  },[fetchStories])
+  useEffect(() => {
+    if (userStories.length === 0) {
+      fetchStories();
+    }
+  }, [fetchStories]);
 
   const pickAndUpload = async () => {
-    const { status } =
-      await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (status !== "granted") {
-      Alert.alert(
-        "Permission needed",
-        "Allow access to your photos to post a story."
-      );
+      Alert.alert("Permission needed", "Allow access to your photos to post a story.");
       return;
     }
 
@@ -41,27 +39,32 @@ export default function StoriesBar({ onViewStory }: StoriesBarProps) {
     if (result.canceled || !result.assets.length) return;
 
     const asset = result.assets[0];
-
     const formData = new FormData();
 
-    formData.append("file", {
-      uri: asset.uri,
-      type: asset.mimeType || "image/jpeg",
-      name: asset.fileName || "story.jpg",
-    } as any);
+    // ✅ Web par blob banao
+    if (Platform.OS === "web") {
+      const response = await fetch(asset.uri);
+      const blob = await response.blob();
+      const extension = asset.mimeType?.startsWith("video") ? "mp4" : "jpg";
+      formData.append("file", blob, `story.${extension}`);
+    } else {
+      formData.append("file", {
+        uri: asset.uri,
+        type: asset.mimeType || "image/jpeg",
+        name: asset.fileName || "story.jpg",
+      } as any);
+    }
 
     setUploading(true);
 
     try {
-      const {data } = await api.post("/api/stories", formData,{
-        headers: {"Context-Type": "multipart/form-data"}
-      })
-      if(data.success) fetchStories()
-    } catch (error: any){
+      const { data } = await api.post("/api/stories", formData);
+      if (data.success) fetchStories();
+    } catch (error: any) {
       Alert.alert("Error", "Failed to post story");
       console.log(error);
-    }finally{
-      setUploading(false)
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -89,7 +92,6 @@ export default function StoriesBar({ onViewStory }: StoriesBarProps) {
                   color={Colors.onSurfaceVariant}
                 />
               </View>
-
               <Text style={styles.label}>Your Story</Text>
             </TouchableOpacity>
           );
@@ -105,7 +107,6 @@ export default function StoriesBar({ onViewStory }: StoriesBarProps) {
             <View style={styles.storyRing}>
               <Avatar name={us.user.name} src={us.user.avatar} size={52} />
             </View>
-
             <Text style={styles.label} numberOfLines={1}>
               {us.user?.name?.split(" ")[0] || "Unknown"}
             </Text>

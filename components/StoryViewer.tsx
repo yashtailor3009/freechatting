@@ -6,6 +6,7 @@ import {
     Animated,
     Image,
     Modal,
+    Platform,
     Text,
     TouchableOpacity,
     View
@@ -128,10 +129,34 @@ export default function StoryViewer({ userStory, onClose }: Props) {
   );
 }
 
+// ✅ FINAL FIX: Web ke liye alag, Mobile ke liye alag
 function StoryVideoPlayer({ uri, style }: { uri: string; style: any }) {
+  // Web ke liye: Browser ka native HTML video tag (Controls Hidden)
+  if (Platform.OS === "web") {
+    return (
+      // eslint-disable-next-line jsx-a11y/media-has-caption
+      <video
+        src={uri}
+        autoPlay
+        muted={false}
+        playsInline
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "contain",
+          backgroundColor: "#000",
+        }}
+        // ✅ CONTROLS = FALSE (Time stamp aur controls hata diye)
+        controls={false}
+      />
+    );
+  }
+
+  // Mobile ke liye: expo-video use karo
   const player = useVideoPlayer({ uri }, (p) => {
     p.loop = false;
     p.play();
   });
-  return <VideoView player={player} style={style} />;
+
+  return <VideoView player={player} style={style} nativeControls={false} />;
 }
