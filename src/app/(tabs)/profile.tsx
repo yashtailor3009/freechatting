@@ -2,15 +2,25 @@ import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { useEffect, useState } from "react";
-import {ActivityIndicator,Alert,Platform,ScrollView,Text,TouchableOpacity,View,} from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { TextInput } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useRouter } from "expo-router"; // ✅ Import karo
 import { styles } from "../../../assets/styles/ProfileScreen.styles";
 import Avatar from "../../../components/Avatar";
 import { Colors } from "../../../constants/Colors";
 import { api, useApp } from "../../../context/AppContext";
 
 export default function profile() {
+  const router = useRouter(); // ✅ Router use karo
   const { auth, logout, updateUser } = useApp();
   const user = auth.user;
   const [editMode, setEditMode] = useState(false);
@@ -68,13 +78,13 @@ export default function profile() {
         }
       }
 
-      const { data } = await api.put("api/users/profile", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      // ✅ FIX: Axios ko content-type khud set karne do
+      const { data } = await api.put("api/users/profile", formData);
+
       if (data.success) {
         await updateUser(data.user);
         if (data.user.avatar) setSavedAvatar(data.user.avatar);
-        Alert.alert("Success", "Proflie updated! ");
+        Alert.alert("Success", "Profile updated! ");
         setEditMode(false);
         setAvatarUri(null);
       }
@@ -88,19 +98,12 @@ export default function profile() {
     }
   };
 
-  // const handleLogout = async () => {
-  //   Alert.alert("Sign out", "Are you sure you want to sign out?",[
-  //     {text: "Cancel" , style: "cancel"},
-  //     {text: "Sign Out", style:"destructive", onPress: () => {
-  //       console.log("User signed out");
-  //     }}
-  //   ])
-  // }
-
+  // ✅ FIXED: Logout function
   const handleLogout = () => {
     if (Platform.OS === "web") {
       if (window.confirm("Are you sure you want to sign out?")) {
-        console.log("User signed out");
+        logout();
+        router.replace("/(auth)");
       }
     } else {
       Alert.alert("Sign Out", "Are you sure you want to sign out?", [
@@ -111,7 +114,10 @@ export default function profile() {
         {
           text: "Sign Out",
           style: "destructive",
-          onPress: logout,
+          onPress: () => {
+            logout();
+            router.replace("/(auth)");
+          },
         },
       ]);
     }
