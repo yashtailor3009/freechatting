@@ -13,6 +13,7 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Helper: find conversation between two users
 async function findConversation(userId: string, otherId: string) {
   return Conversation.findOne({
     $and: [
@@ -23,6 +24,7 @@ async function findConversation(userId: string, otherId: string) {
   } as any);
 }
 
+// Start or get a conversation with a user
 export const getOrCreateConversation = async (
   req: AuthRequest,
   res: Response,
@@ -30,82 +32,110 @@ export const getOrCreateConversation = async (
   const userId = req.user!.id;
   const targetUserId = String(req.params.targetUserId);
 
-  let conversation: any = await findConversation(userId, targetUserId);
+  let conversation: any = await findConversation(
+    userId,
+    targetUserId,
+  );
 
   if (conversation) {
     await conversation.populate("lastMessage");
   } else {
     conversation = await Conversation.create({
-      participants: [userId, String(targetUserId)]
+      participants: [userId, targetUserId],
     });
   }
 
-  const otherId = (conversation.participants as string[]).find(
-    (p: string) => String(p) !== userId
-  ) || "";
+  const otherId =
+    (conversation.participants as string[]).find(
+      (p: string) => String(p) !== userId,
+    ) || "";
 
-  const otherUser = await User.findById(otherId).select("name avatar handle isOnline lastSeen");
+  const otherUser = await User.findById(otherId).select(
+    "name avatar handle isOnline lastSeen",
+  );
 
   return res.status(200).json({
     success: true,
     conversation: {
       _id: conversation._id,
       participantId: otherId,
-      participant: otherUser, 
+      participant: otherUser,
       lastMessage: conversation.lastMessage || null,
       updatedAt: conversation.updatedAt,
     },
   });
 };
 
-export const getConversations = async (req: AuthRequest, res: Response) => {
+// Get all conversations for current user
+export const getConversations = async (
+  req: AuthRequest,
+  res: Response,
+) => {
   const userId = req.user!.id;
-  
+
   const conversations = await Conversation.find({
-    participants: { $in: [userId] }
+    participants: { $in: [userId] },
   })
     .populate("lastMessage")
     .sort({ updatedAt: -1 });
 
-  const shaped = await Promise.all(conversations.map(async (c) => {
-    const otherId = (c.participants as string[]).find(
-      (p: string) => String(p) !== userId
-    ) || "";
+  const shaped = await Promise.all(
+    conversations.map(async (c) => {
+      const otherId =
+        (c.participants as string[]).find(
+          (p: string) => String(p) !== userId,
+        ) || "";
 
-    const otherUser = await User.findById(otherId).select("name avatar handle isOnline lastSeen");
+      const otherUser = await User.findById(otherId).select(
+        "name avatar handle isOnline lastSeen",
+      );
 
-    return {
-      _id: c._id,
-      isGroup: false,
-      participantId: otherId,
-      participant: otherUser,
-      lastMessage: c.lastMessage || null,
-      updatedAt: c.updatedAt
-    };
-  }));
+      return {
+        _id: c._id,
+        isGroup: false,
+        participantId: otherId,
+        participant: otherUser,
+        lastMessage: c.lastMessage || null,
+        updatedAt: c.updatedAt,
+      };
+    }),
+  );
 
-  res.json({ success: true, conversations: shaped });
+  res.json({
+    success: true,
+    conversations: shaped,
+  });
 };
 
-export const getConversationById = async (req: AuthRequest, res: Response) => {
+// Get conversation by ID
+export const getConversationById = async (
+  req: AuthRequest,
+  res: Response,
+) => {
   const userId = req.user!.id;
   const { conversationId } = req.params;
 
   try {
     const conversation = await Conversation.findOne({
       _id: conversationId,
-      participants: { $in: [userId] }
+      participants: { $in: [userId] },
     }).populate("lastMessage");
 
     if (!conversation) {
-      return res.status(404).json({ success: false, message: "Conversation not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Conversation not found",
+      });
     }
 
-    const otherId = (conversation.participants as string[]).find(
-      (p: string) => String(p) !== userId
-    ) || "";
+    const otherId =
+      (conversation.participants as string[]).find(
+        (p: string) => String(p) !== userId,
+      ) || "";
 
-    const otherUser = await User.findById(otherId).select("name avatar handle isOnline lastSeen");
+    const otherUser = await User.findById(otherId).select(
+      "name avatar handle isOnline lastSeen",
+    );
 
     return res.json({
       success: true,
@@ -114,49 +144,86 @@ export const getConversationById = async (req: AuthRequest, res: Response) => {
         participantId: otherId,
         participant: otherUser,
         lastMessage: conversation.lastMessage || null,
-        updatedAt: conversation.updatedAt
-      }
+        updatedAt: conversation.updatedAt,
+      },
     });
   } catch (error) {
     console.error("Error fetching conversation:", error);
-    return res.status(500).json({ success: false, message: "Server error" });
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 };
 
-export const sendMessage = async (req: AuthRequest, res: Response) => {
+// Send a message
+export const sendMessage = async (
+  req: AuthRequest,
+  res: Response,
+) => {
   const senderId = req.user!.id;
   const { receiverId, conversationId, text } = req.body;
   const file = req.file;
 
-  if ((!receiverId && !conversationId) || (!text?.trim() && !file)) {
-    res.status(400).json({ success: false, message: "receiverId/conversationId and (text or file) are required" });
-    return;
+  if (
+    (!receiverId && !conversationId) ||
+    (!text?.trim() && !file)
+  ) {
+    return res.status(400).json({
+      success: false,
+      message:
+        "receiverId/conversationId and (text or file) are required",
+    });
   }
 
   let mediaUrl = "";
   let mediaType: "image" | "video" | undefined;
 
+  // Save media locally
   if (file) {
     try {
-      const resourceType = file.mimetype.startsWith("video") ? "video" : "image";
+      const resourceType = file.mimetype.startsWith("video")
+        ? "video"
+        : "image";
+
       mediaType = resourceType;
 
-      // ✅ FIX: Ye 100% 'server/uploads' folder mein save karega
-      const uploadsDir = path.join(process.cwd(), "uploads");
+      const uploadsDir = path.join(
+        process.cwd(),
+        "uploads",
+      );
+
       if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
+        fs.mkdirSync(uploadsDir, {
+          recursive: true,
+        });
       }
 
-      const safeFileName = file.originalname && file.originalname !== "" ? file.originalname : (resourceType === "video" ? "video.mp4" : "image.jpg");
+      const safeFileName =
+        file.originalname && file.originalname !== ""
+          ? file.originalname
+          : resourceType === "video"
+            ? "video.mp4"
+            : "image.jpg";
+
       const fileName = `${Date.now()}-${safeFileName}`;
-      const filePath = path.join(uploadsDir, fileName);
+
+      const filePath = path.join(
+        uploadsDir,
+        fileName,
+      );
+
       fs.writeFileSync(filePath, file.buffer);
 
       mediaUrl = `http://localhost:3000/uploads/${fileName}`;
-
     } catch (err) {
       console.error("Error saving media:", err);
-      return res.status(500).json({ success: false, message: "Media upload failed" });
+
+      return res.status(500).json({
+        success: false,
+        message: "Media upload failed",
+      });
     }
   }
 
@@ -168,7 +235,10 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
       participants: { $in: [senderId] },
     });
   } else {
-    conversation = await findConversation(senderId, receiverId);
+    conversation = await findConversation(
+      senderId,
+      receiverId,
+    );
 
     if (!conversation) {
       conversation = await Conversation.create({
@@ -178,17 +248,24 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
   }
 
   if (!conversation) {
-    res.status(404).json({ success: false, message: "Conversation not found" });
-    return;
+    return res.status(404).json({
+      success: false,
+      message: "Conversation not found",
+    });
   }
 
-  const validReceiverId = receiverId || 
-    (conversation.participants as string[]).find((p: string) => String(p) !== senderId) || 
+  const validReceiverId =
+    receiverId ||
+    (conversation.participants as string[]).find(
+      (p: string) => String(p) !== senderId,
+    ) ||
     "";
 
   if (!validReceiverId) {
-    res.status(400).json({ success: false, message: "Receiver ID is required" });
-    return;
+    return res.status(400).json({
+      success: false,
+      message: "Receiver ID is required",
+    });
   }
 
   const message = await Message.create({
@@ -202,46 +279,56 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
 
   conversation.lastMessage = message._id as any;
   conversation.updatedAt = new Date();
-  await conversation.save();
 
+  await conversation.save();
   await conversation.populate("lastMessage");
 
-  res.status(201).json({
+  return res.status(201).json({
     success: true,
     message: {
       ...message.toObject(),
-    }
+    },
   });
 };
 
-export const getMessages = async (req: AuthRequest, res: Response) => {
+// Get all messages in a conversation
+export const getMessages = async (
+  req: AuthRequest,
+  res: Response,
+) => {
   const userId = req.user!.id;
   const { conversationId } = req.params;
 
-  // Force no-cache headers on the response to prevent 304 errors
-  res.setHeader('Cache-Control', 'no-store');
+  // Prevent browser 304 cache
+  res.setHeader("Cache-Control", "no-store");
 
   try {
     const conversation = await Conversation.findOne({
       _id: conversationId,
-      participants: { $in: [userId] }
+      participants: { $in: [userId] },
     });
 
     if (!conversation) {
       return res.status(404).json({
         success: false,
-        message: "Conversation not found"
+        message: "Conversation not found",
       });
     }
 
-    // Fetch messages directly (No populate causing hangs)
-    const messages = await Message.find({ conversationId })
-      .sort({ createdAt: 1 });
+    const messages = await Message.find({
+      conversationId,
+    }).sort({ createdAt: 1 });
 
-    // Mark as read
+    // Mark received messages as read
     await Message.updateMany(
-      { conversationId, receiver: userId, read: false },
-      { read: true }
+      {
+        conversationId,
+        receiver: userId,
+        read: false,
+      },
+      {
+        read: true,
+      },
     );
 
     return res.json({
@@ -250,79 +337,162 @@ export const getMessages = async (req: AuthRequest, res: Response) => {
       conversation: {
         _id: conversation._id,
         participants: conversation.participants,
-        updatedAt: conversation.updatedAt
-      }
+        updatedAt: conversation.updatedAt,
+      },
     });
   } catch (error) {
     console.error("Error fetching messages:", error);
+
     return res.status(500).json({
       success: false,
-      message: "Server error fetching messages"
+      message: "Server error fetching messages",
     });
   }
 };
 
-export const deleteMessage = async (req: AuthRequest, res: Response) => {
+// Delete a message
+export const deleteMessage = async (
+  req: AuthRequest,
+  res: Response,
+) => {
   const userId = req.user!.id;
   const { messageId } = req.params;
 
   try {
+    // Find message
     const message = await Message.findById(messageId);
 
     if (!message) {
-      return res.status(404).json({ success: false, message: "Message not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Message not found",
+      });
     }
 
-    // Sirf sender hi apna message delete kar sakta hai
-    if (message.sender !== userId) {
-      return res.status(403).json({ success: false, message: "Unauthorized to delete this message" });
+    // Find conversation
+    const conversation = await Conversation.findById(
+      message.conversationId,
+    );
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: "Conversation not found",
+      });
     }
 
-    // Message delete kar do
+    // Check whether current user belongs
+    // to this conversation
+    const isParticipant = (
+      conversation.participants as string[]
+    ).some(
+      (p: string) => String(p) === userId,
+    );
+
+    if (!isParticipant) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized to delete this message",
+      });
+    }
+
+    // Delete message
     await message.deleteOne();
 
-    // Agar conversation ka lastMessage yeh tha, toh update karo
-    const conversation = await Conversation.findById(message.conversationId);
-    if (conversation && conversation.lastMessage?.toString() === messageId) {
+    // If deleted message was the last message,
+    // clear lastMessage
+    if (
+      conversation.lastMessage?.toString() ===
+      messageId
+    ) {
       conversation.lastMessage = undefined;
       await conversation.save();
     }
 
-    return res.json({ success: true, message: "Message deleted successfully" });
+    return res.json({
+      success: true,
+      message: "Message deleted successfully",
+    });
   } catch (error) {
-    console.error("Error deleting message:", error);
-    return res.status(500).json({ success: false, message: "Server error" });
+    console.error(
+      "Error deleting message:",
+      error,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 };
 
-export const deleteConversation = async (req: AuthRequest, res: Response) => {
+// Delete a conversation
+export const deleteConversation = async (
+  req: AuthRequest,
+  res: Response,
+) => {
   const userId = req.user!.id;
   const { conversationId } = req.params;
 
   try {
-    const conversation = await Conversation.findById(conversationId);
-    
+    const conversation =
+      await Conversation.findById(conversationId);
+
     if (!conversation) {
-      res.status(404).json({ success: false, message: "Conversation not found" });
-      return;
+      return res.status(404).json({
+        success: false,
+        message: "Conversation not found",
+      });
     }
 
-    const isParticipant = (conversation.participants as string[]).some(
-      (p: string) => String(p) === userId
+    // Check whether user belongs
+    // to this conversation
+    const isParticipant = (
+      conversation.participants as string[]
+    ).some(
+      (p: string) => String(p) === userId,
     );
-    
+
     if (!isParticipant) {
-      res.status(404).json({ success: false, message: "Conversation not found" });
-      return;
+      return res.status(404).json({
+        success: false,
+        message: "Conversation not found",
+      });
     }
 
-    await handleConversationEvent(userId, String(conversationId), { type: "chat_deleted", conversationId });
-    await Message.deleteMany({ conversationId });
-    await Conversation.findByIdAndDelete(conversationId);
+    // Notify other participants
+    await handleConversationEvent(
+      userId,
+      String(conversationId),
+      {
+        type: "chat_deleted",
+        conversationId,
+      },
+    );
 
-    res.json({ success: true, message: "Chat deleted successfully" });
+    // Delete all messages
+    await Message.deleteMany({
+      conversationId,
+    });
+
+    // Delete conversation
+    await Conversation.findByIdAndDelete(
+      conversationId,
+    );
+
+    return res.json({
+      success: true,
+      message: "Chat deleted successfully",
+    });
   } catch (error) {
-    console.error("Error deleting conversation:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    console.error(
+      "Error deleting conversation:",
+      error,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 };
