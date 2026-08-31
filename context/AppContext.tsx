@@ -10,16 +10,12 @@ import React, {
   useState,
 } from "react";
 
-import { WS_URL } from "../constants/config";
+import { API_BASE_URL, WS_URL } from "../constants/config";
 
 import { AuthState, Conversation, Message, User, UserStory } from "../types";
 
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL || "http://localhost:3000";
-
-export const api = axios.create({
-  baseURL: 'http://localhost:3000', 
-  //timeout: 10000,
+const api = axios.create({
+  baseURL: API_BASE_URL,
 });
 
 const _tokenRef = {
@@ -95,9 +91,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const { getToken, isLoaded: authLoaded, isSignedIn, signOut } = useAuth();
   const getTokenRef = useRef(getToken);
 
-useEffect(() => {
-  getTokenRef.current = getToken;
-}, [getToken]);
+  useEffect(() => {
+    getTokenRef.current = getToken;
+  }, [getToken]);
 
   const { user: clerkUser, isLoaded: userLoaded } = useUser();
 
@@ -129,8 +125,7 @@ useEffect(() => {
   // AXIOS TOKEN
 
   useEffect(() => {
-  const interceptor = api.interceptors.request.use(
-    async (config) => {
+    const interceptor = api.interceptors.request.use(async (config) => {
       try {
         if (isSignedIn) {
           const token = await getTokenRef.current();
@@ -138,36 +133,26 @@ useEffect(() => {
           if (token) {
             config.headers = config.headers ?? {};
 
-            config.headers.Authorization =
-              `Bearer ${token}`;
+            config.headers.Authorization = `Bearer ${token}`;
 
             _tokenRef.current = token;
 
-            console.log(
-              "Axios interceptor - token attached:",
-              true
-            );
+            console.log("Axios interceptor - token attached:", true);
           } else {
-            console.log(
-              "Axios: Clerk token not available"
-            );
+            console.log("Axios: Clerk token not available");
           }
         }
       } catch (error) {
-        console.error(
-          "Axios interceptor error:",
-          error
-        );
+        console.error("Axios interceptor error:", error);
       }
 
       return config;
-    }
-  );
+    });
 
-  return () => {
-    api.interceptors.request.eject(interceptor);
-  };
-}, [isSignedIn]);
+    return () => {
+      api.interceptors.request.eject(interceptor);
+    };
+  }, [isSignedIn]);
 
   // AUTH SYNC
 
@@ -251,8 +236,7 @@ useEffect(() => {
     }));
   }, []);
 
-
-    const fetchStories = useCallback(async () => {
+  const fetchStories = useCallback(async () => {
     try {
       const { data } = await api.get("/api/stories");
       if (data.success) {

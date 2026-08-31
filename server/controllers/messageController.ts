@@ -216,7 +216,7 @@ export const sendMessage = async (
 
       fs.writeFileSync(filePath, file.buffer);
 
-      mediaUrl = `http://localhost:3000/uploads/${fileName}`;
+      mediaUrl = `https://freechatting-zn5h.onrender.com/uploads/${fileName}`;
     } catch (err) {
       console.error("Error saving media:", err);
 
