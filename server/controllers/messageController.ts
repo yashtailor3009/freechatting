@@ -30,7 +30,7 @@ export const getOrCreateConversation = async (
   res: Response,
 ) => {
   const userId = req.user!.id;
-  const targetUserId = String(req.params.targetUserId);
+  const targetUserId = String(req.params.userId);
 
   let conversation: any = await findConversation(
     userId,
@@ -269,19 +269,31 @@ export const sendMessage = async (
   }
 
   const message = await Message.create({
-    sender: senderId,
-    receiver: validReceiverId,
-    conversationId: conversation._id,
-    text: text?.trim() || "",
-    mediaUrl: mediaUrl || undefined,
-    mediaType,
-  });
+  sender: senderId,
+  receiver: validReceiverId,
+  conversationId: conversation._id,
+  text: text?.trim() || "",
+  mediaUrl: mediaUrl || undefined,
+  mediaType,
+});
 
-  conversation.lastMessage = message._id as any;
-  conversation.updatedAt = new Date();
+conversation.lastMessage = message._id as any;
+conversation.updatedAt = new Date();
 
-  await conversation.save();
-  await conversation.populate("lastMessage");
+await conversation.save();
+
+await conversation.populate("lastMessage");
+
+// 🔥 SEND MESSAGE TO RECEIVER THROUGH WEBSOCKET
+await handleConversationEvent(
+  senderId,
+  String(conversation._id),
+  {
+    type: "message",
+    payload: message.toObject(),
+  }
+);
+
 
   return res.status(201).json({
     success: true,

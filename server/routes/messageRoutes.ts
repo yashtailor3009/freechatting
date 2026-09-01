@@ -16,7 +16,7 @@ const messageRouter = Router();
 messageRouter.use(authMiddleware);
 
 messageRouter.get("/conversations", getConversations);
-messageRouter.post("/conversations/get-or-create", getOrCreateConversation); 
+messageRouter.get("/conversations/with/:userId",getOrCreateConversation);
 
 messageRouter.get("/conversations/:conversationId/messages", getMessages); 
 messageRouter.get("/conversations/:conversationId", getConversationById);
