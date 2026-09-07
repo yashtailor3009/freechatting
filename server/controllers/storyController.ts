@@ -32,7 +32,7 @@ export const createStory = async (req: AuthRequest, res: Response) => {
 
         const story = await Story.create({
             user: userId,
-            mediaUrl: `http://localhost:3000/uploads/${fileName}`,
+            mediaUrl: `https://freechatting-zn5h.onrender.com/uploads/${fileName}`,
             mediaType: extension === "mp4" ? "video" : "image",
         });
 

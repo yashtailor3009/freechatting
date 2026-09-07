@@ -1,4 +1,4 @@
-import { styles } from "@/assets/styles/StoryViewer.styles";
+import { styles } from "../assets/styles/StoryViewer.styles";
 import { Ionicons } from "@expo/vector-icons";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { useEffect, useRef, useState } from "react";

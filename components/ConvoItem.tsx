@@ -1,4 +1,4 @@
-import { styles } from "@/assets/styles/ConvoItem.styles";
+import { styles } from "../assets/styles/ConvoItem.styles";
 import { Text, TouchableOpacity, View } from "react-native";
 import { Conversation } from "../types";
 import Avatar from "./Avatar";

@@ -17,21 +17,14 @@ const __dirname = path.dirname(__filename);
 const app = express();
 
 await connectDB();
+
+// ✅ CORS: Sabko allow karo (Localhost + Production dono kaam karega)
 app.use(cors());
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:8081');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-  next();
-});
-
+// ✅ Clerk middleware
 app.use(clerkMiddleware());
 
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -39,6 +32,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// ✅ PORT: Render ke liye 10000, localhost ke liye 3000
 const port = process.env.PORT || 3000;
 
 app.get('/', (req: Request, res: Response) => {
@@ -53,7 +47,7 @@ app.get('/health', (req: Request, res: Response) => {
   });
 });
 
-// ✅ FIX: Uploads folder ko absolute path se serve karo
+// ✅ Serve uploaded files
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 app.use("/api/users", userRouter);
