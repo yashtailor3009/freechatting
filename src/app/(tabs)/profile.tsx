@@ -13,148 +13,277 @@ import {
 } from "react-native";
 import { TextInput } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router"; // ✅ Import karo
+import { useRouter } from "expo-router";
+
 import { styles } from "../../../assets/styles/ProfileScreen.styles";
 import Avatar from "../../../components/Avatar";
 import { Colors } from "../../../constants/Colors";
-import { api, useApp } from "../../../context/AppContext";
+import { useApp } from "../../../context/AppContext";
 
-export default function profile() {
-  const router = useRouter(); // ✅ Router use karo
-  const { auth, logout, updateUser } = useApp();
+export default function Profile() {
+  const router = useRouter();
+
+  const { api, auth, logout, updateUser } = useApp();
+
   const user = auth.user;
+
   const [editMode, setEditMode] = useState(false);
-  const [profileName, setProfileName] = useState(auth.user?.name || " ");
-  const [profileHandle, setProfileHandle] = useState(auth.user?.handle || " ");
-  const [profileBio, setProfileBio] = useState(auth.user?.bio || " ");
+
+  const [profileName, setProfileName] = useState(
+    auth.user?.name || "",
+  );
+
+  const [profileHandle, setProfileHandle] = useState(
+    auth.user?.handle || "",
+  );
+
+  const [profileBio, setProfileBio] = useState(
+    auth.user?.bio || "",
+  );
+
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(false);
+
   const [savedAvatar, setSavedAvatar] = useState<string | null>(
     user?.avatar || null,
   );
 
-  const displayAvatar = avatarUri || savedAvatar || user?.avatar;
+  const displayAvatar =
+    avatarUri || savedAvatar || user?.avatar || null;
 
+  /*
+   * =========================================================
+   * SYNC PROFILE FORM WITH AUTH USER
+   * =========================================================
+   *
+   * We intentionally do NOT call:
+   *
+   * GET /api/users/profile
+   *
+   * here.
+   *
+   * AppContext already has the authenticated user.
+   */
+  useEffect(() => {
+    if (!auth.user) {
+      return;
+    }
+
+    setProfileName(auth.user.name || "");
+    setProfileHandle(auth.user.handle || "");
+    setProfileBio(auth.user.bio || "");
+    setSavedAvatar(auth.user.avatar || null);
+    setAvatarUri(null);
+  }, [auth.user]);
+
+  /*
+   * =========================================================
+   * PICK AVATAR
+   * =========================================================
+   */
   const pickAvatar = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const { status } =
+      await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (status !== "granted") {
       Alert.alert(
         "Permission needed",
         "Allow access to your photos to change avatar.",
       );
+
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      quality: 0.8,
-      allowsEditing: true,
-      aspect: [1, 1],
-    });
+
+    const result =
+      await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+        allowsEditing: true,
+        aspect: [1, 1],
+      });
+
     if (!result.canceled && result.assets[0]) {
       setAvatarUri(result.assets[0].uri);
     }
   };
 
+  /*
+   * =========================================================
+   * SAVE PROFILE
+   * =========================================================
+   */
   const saveProfile = async () => {
+    if (!auth.user) {
+      Alert.alert(
+        "Error",
+        "User information is not available.",
+      );
+
+      return;
+    }
+
     setLoading(true);
+
     try {
       const formData = new FormData();
-      formData.append("name", profileName);
-      formData.append("handle", profileHandle);
-      formData.append("bio", profileBio);
+
+      formData.append("name", profileName.trim());
+      formData.append(
+        "handle",
+        profileHandle.trim().toLowerCase(),
+      );
+      formData.append("bio", profileBio.trim());
+
       if (avatarUri) {
         if (Platform.OS === "web") {
           const response = await fetch(avatarUri);
           const blob = await response.blob();
 
-          formData.append("avatar", blob, "avatar.jpg");
+          formData.append(
+            "avatar",
+            blob,
+            "avatar.jpg",
+          );
         } else {
-          formData.append("avatar", {
-            uri: avatarUri,
-            type: "image/jpeg",
-            name: "avatar.jpg",
-          } as any);
+          formData.append(
+            "avatar",
+            {
+              uri: avatarUri,
+              type: "image/jpeg",
+              name: "avatar.jpg",
+            } as any,
+          );
         }
       }
 
-      // ✅ FIX: Axios ko content-type khud set karne do
-      const { data } = await api.put("api/users/profile", formData);
+      /*
+       * IMPORTANT:
+       * Leading "/" keeps the API path consistent.
+       * Axios interceptor in AppContext adds the Clerk token.
+       */
+      const { data } = await api.put(
+        "/api/users/profile",
+        formData,
+      );
 
-      if (data.success) {
-        await updateUser(data.user);
-        if (data.user.avatar) setSavedAvatar(data.user.avatar);
-        Alert.alert("Success", "Profile updated! ");
-        setEditMode(false);
-        setAvatarUri(null);
+      if (!data?.success) {
+        throw new Error(
+          data?.message || "Failed to update profile",
+        );
       }
-    } catch (err: any) {
+
+      await updateUser(data.user);
+
+      if (data.user?.avatar) {
+        setSavedAvatar(data.user.avatar);
+      }
+
+      setAvatarUri(null);
+      setEditMode(false);
+
+      Alert.alert(
+        "Success",
+        "Profile updated successfully!",
+      );
+    } catch (error: any) {
+      console.error(
+        "Profile update error:",
+        error?.response?.data || error?.message || error,
+      );
+
       Alert.alert(
         "Error",
-        err?.response?.data?.message || "Failed to update profile",
+        error?.response?.data?.message ||
+          error?.message ||
+          "Failed to update profile",
       );
     } finally {
       setLoading(false);
     }
   };
 
-  // ✅ FIXED: Logout function
-  const handleLogout = () => {
+  /*
+   * =========================================================
+   * LOGOUT
+   * =========================================================
+   */
+  const handleLogout = async () => {
     if (Platform.OS === "web") {
-      if (window.confirm("Are you sure you want to sign out?")) {
-        logout();
-        router.replace("/(auth)");
+      const confirmed = window.confirm(
+        "Are you sure you want to sign out?",
+      );
+
+      if (!confirmed) {
+        return;
       }
     } else {
-      Alert.alert("Sign Out", "Are you sure you want to sign out?", [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Sign Out",
-          style: "destructive",
-          onPress: () => {
-            logout();
-            router.replace("/(auth)");
+      Alert.alert(
+        "Sign Out",
+        "Are you sure you want to sign out?",
+        [
+          {
+            text: "Cancel",
+            style: "cancel",
           },
-        },
-      ]);
-    }
-  };
+          {
+            text: "Sign Out",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await logout();
+                router.replace("/(auth)");
+              } catch (error) {
+                console.error(
+                  "Logout error:",
+                  error,
+                );
+              }
+            },
+          },
+        ],
+      );
 
-  const getUser = async () => {
+      return;
+    }
+
     try {
-      const { data } = await api.get("/api/users/profile");
-      setProfileName(data.user.name);
-      setProfileHandle(data.user.handle);
-      setProfileBio(data.user.bio);
-      if (data.user.avatar) {
-        setSavedAvatar(data.user.avatar);
-        setAvatarUri(null);
-      }
-    } catch (err: any) {
-      console.log(err.message);
+      await logout();
+      router.replace("/(auth)");
+    } catch (error) {
+      console.error(
+        "Logout error:",
+        error,
+      );
     }
   };
-
-  useEffect(() => {
-    getUser();
-  }, []);
 
   return (
-    <SafeAreaView style={styles.safe} edges={["top"]}>
-      <ScrollView contentContainerStyle={styles.scroll}>
-        {/* header */}
+    <SafeAreaView
+      style={styles.safe}
+      edges={["top"]}
+    >
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+      >
+        {/* Header */}
         <View style={styles.header}>
           <Text style={styles.title}>Profile</Text>
+
           {!editMode && (
             <TouchableOpacity
               style={styles.editBtn}
               onPress={() => setEditMode(true)}
             >
-              <Ionicons name="pencil" size={16} color={Colors.primary} />
-              <Text style={styles.editBtnText}>Edit</Text>
+              <Ionicons
+                name="pencil"
+                size={16}
+                color={Colors.primary}
+              />
+
+              <Text style={styles.editBtnText}>
+                Edit
+              </Text>
             </TouchableOpacity>
           )}
         </View>
@@ -162,14 +291,27 @@ export default function profile() {
         {/* Avatar */}
         <View style={styles.avatarSection}>
           <TouchableOpacity
-            onPress={editMode ? pickAvatar : undefined}
-            activeOpacity={editMode ? 0.7 : 1}
+            onPress={
+              editMode ? pickAvatar : undefined
+            }
+            activeOpacity={
+              editMode ? 0.7 : 1
+            }
           >
             <View style={styles.avatarWrapper}>
-              <Avatar name={user?.name || "?"} src={displayAvatar} size={100} />
+              <Avatar
+                name={user?.name || "?"}
+                src={displayAvatar || undefined}
+                size={100}
+              />
+
               {editMode && (
                 <View style={styles.cameraOverlay}>
-                  <Ionicons name="camera" size={22} color="#fff" />
+                  <Ionicons
+                    name="camera"
+                    size={22}
+                    color="#fff"
+                  />
                 </View>
               )}
             </View>
@@ -177,63 +319,105 @@ export default function profile() {
 
           {!editMode && (
             <View style={styles.userInfo}>
-              <Text style={styles.userName}>{profileName}</Text>
-              <Text style={styles.userHandle}>@{profileHandle}</Text>
-              <Text style={styles.userEmail}>{user?.email}</Text>
-              {user?.bio && <Text style={styles.userBio}>{profileBio}</Text>}
+              <Text style={styles.userName}>
+                {profileName}
+              </Text>
+
+              <Text style={styles.userHandle}>
+                @{profileHandle}
+              </Text>
+
+              <Text style={styles.userEmail}>
+                {user?.email}
+              </Text>
+
+              {user?.bio && (
+                <Text style={styles.userBio}>
+                  {profileBio}
+                </Text>
+              )}
             </View>
           )}
         </View>
 
-        {/* Edit form */}
+        {/* Edit Form */}
         {editMode && (
           <View style={styles.form}>
-            {/* NAME */}
+            {/* Name */}
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>NAME</Text>
+              <Text style={styles.fieldLabel}>
+                NAME
+              </Text>
+
               <TextInput
                 style={styles.input}
                 value={profileName}
                 onChangeText={setProfileName}
                 placeholder="Your name"
-                placeholderTextColor={Colors.outlineVariant}
+                placeholderTextColor={
+                  Colors.outlineVariant
+                }
                 autoCapitalize="words"
               />
             </View>
 
-            {/* HANDLE */}
+            {/* Handle */}
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>HANDLE</Text>
+              <Text style={styles.fieldLabel}>
+                HANDLE
+              </Text>
+
               <View style={styles.handleRow}>
-                <Text style={styles.atSign}>@</Text>
+                <Text style={styles.atSign}>
+                  @
+                </Text>
+
                 <TextInput
-                  style={[styles.input, styles.handleInput]}
+                  style={[
+                    styles.input,
+                    styles.handleInput,
+                  ]}
                   value={profileHandle}
-                  onChangeText={(v) =>
-                    setProfileHandle(v.toLowerCase().replace(/\s/g, ""))
+                  onChangeText={(value) =>
+                    setProfileHandle(
+                      value
+                        .toLowerCase()
+                        .replace(/\s/g, ""),
+                    )
                   }
                   placeholder="username"
-                  placeholderTextColor={Colors.outlineVariant}
+                  placeholderTextColor={
+                    Colors.outlineVariant
+                  }
                   autoCapitalize="none"
+                  autoCorrect={false}
                 />
               </View>
             </View>
 
-            {/* BIO */}
+            {/* Bio */}
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>BIO</Text>
+              <Text style={styles.fieldLabel}>
+                BIO
+              </Text>
+
               <TextInput
-                style={[styles.input, styles.bioInput]}
+                style={[
+                  styles.input,
+                  styles.bioInput,
+                ]}
                 value={profileBio}
                 onChangeText={setProfileBio}
                 placeholder="Tell us about yourself..."
-                placeholderTextColor={Colors.outlineVariant}
+                placeholderTextColor={
+                  Colors.outlineVariant
+                }
                 multiline
                 numberOfLines={3}
               />
             </View>
 
-            {/* Save Button */}
+            {/* Save */}
             <TouchableOpacity
               onPress={saveProfile}
               disabled={loading}
@@ -241,28 +425,50 @@ export default function profile() {
               activeOpacity={0.88}
             >
               <LinearGradient
-                colors={[Colors.primary, Colors.primaryContainer]}
+                colors={[
+                  Colors.primary,
+                  Colors.primaryContainer,
+                ]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={styles.saveBtn}
               >
                 {loading ? (
-                  <ActivityIndicator color={Colors.onPrimary} />
+                  <ActivityIndicator
+                    color={Colors.onPrimary}
+                  />
                 ) : (
-                  <Text style={styles.saveBtnText}>Save Changes</Text>
+                  <Text style={styles.saveBtnText}>
+                    Save Changes
+                  </Text>
                 )}
               </LinearGradient>
             </TouchableOpacity>
 
-            {/* Cancel Button */}
+            {/* Cancel */}
             <TouchableOpacity
               style={styles.cancelBtn}
               onPress={() => {
                 setEditMode(false);
                 setAvatarUri(null);
+
+                setProfileName(
+                  auth.user?.name || "",
+                );
+                setProfileHandle(
+                  auth.user?.handle || "",
+                );
+                setProfileBio(
+                  auth.user?.bio || "",
+                );
+                setSavedAvatar(
+                  auth.user?.avatar || null,
+                );
               }}
             >
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+              <Text style={styles.cancelBtnText}>
+                Cancel
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -270,7 +476,9 @@ export default function profile() {
         {/* Profile Options */}
         {!editMode && (
           <View style={styles.optionsSection}>
-            <TouchableOpacity style={styles.optionRow}>
+            <TouchableOpacity
+              style={styles.optionRow}
+            >
               <View style={styles.optionIcon}>
                 <Ionicons
                   name="settings-outline"
@@ -278,7 +486,11 @@ export default function profile() {
                   color={Colors.onSurfaceVariant}
                 />
               </View>
-              <Text style={styles.optionText}>Setting</Text>
+
+              <Text style={styles.optionText}>
+                Setting
+              </Text>
+
               <Ionicons
                 name="chevron-forward"
                 size={16}
@@ -286,7 +498,9 @@ export default function profile() {
               />
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.optionRow}>
+            <TouchableOpacity
+              style={styles.optionRow}
+            >
               <View style={styles.optionIcon}>
                 <Ionicons
                   name="notifications-outline"
@@ -294,7 +508,11 @@ export default function profile() {
                   color={Colors.onSurfaceVariant}
                 />
               </View>
-              <Text style={styles.optionText}>Notifications</Text>
+
+              <Text style={styles.optionText}>
+                Notifications
+              </Text>
+
               <Ionicons
                 name="chevron-forward"
                 size={16}
@@ -302,7 +520,9 @@ export default function profile() {
               />
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.optionRow}>
+            <TouchableOpacity
+              style={styles.optionRow}
+            >
               <View style={styles.optionIcon}>
                 <Ionicons
                   name="lock-closed-outline"
@@ -310,7 +530,11 @@ export default function profile() {
                   color={Colors.onSurfaceVariant}
                 />
               </View>
-              <Text style={styles.optionText}>Privacy & Security</Text>
+
+              <Text style={styles.optionText}>
+                Privacy & Security
+              </Text>
+
               <Ionicons
                 name="chevron-forward"
                 size={16}
@@ -318,7 +542,9 @@ export default function profile() {
               />
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.optionRow}>
+            <TouchableOpacity
+              style={styles.optionRow}
+            >
               <View style={styles.optionIcon}>
                 <Ionicons
                   name="help-circle-outline"
@@ -326,7 +552,11 @@ export default function profile() {
                   color={Colors.onSurfaceVariant}
                 />
               </View>
-              <Text style={styles.optionText}>Help & Support</Text>
+
+              <Text style={styles.optionText}>
+                Help & Support
+              </Text>
+
               <Ionicons
                 name="chevron-forward"
                 size={16}
@@ -336,11 +566,21 @@ export default function profile() {
           </View>
         )}
 
-        {/* Sign out */}
+        {/* Sign Out */}
         <View style={styles.signOutSection}>
-          <TouchableOpacity style={styles.signOutBtn} onPress={handleLogout}>
-            <Ionicons name="log-out-outline" size={18} color={Colors.error} />
-            <Text style={styles.signOutText}>Sign Out</Text>
+          <TouchableOpacity
+            style={styles.signOutBtn}
+            onPress={handleLogout}
+          >
+            <Ionicons
+              name="log-out-outline"
+              size={18}
+              color={Colors.error}
+            />
+
+            <Text style={styles.signOutText}>
+              Sign Out
+            </Text>
           </TouchableOpacity>
         </View>
       </ScrollView>

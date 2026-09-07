@@ -1,10 +1,10 @@
-import { styles } from "@/assets/styles/ChatScreen.styles";
-import { useAuth } from "@clerk/expo";
+import { styles } from "../../../assets/styles/ChatScreen.styles";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
 import {
   ActivityIndicator,
   Alert,
@@ -17,16 +17,20 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
 import { SafeAreaView } from "react-native-safe-area-context";
+
 import Avatar from "../../../components/Avatar";
 import Bubble from "../../../components/Bubble";
 import { Colors } from "../../../constants/Colors";
-import { api, useApp } from "../../../context/AppContext";
+import { useApp } from "../../../context/AppContext";
 import { Message } from "../../../types";
 
 export default function ChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+
   const {
+    api,
     auth,
     messages,
     users,
@@ -38,237 +42,897 @@ export default function ChatScreen() {
     setMessages,
     sendWsEvent,
   } = useApp();
+
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
   const [mediaUri, setMediaUri] = useState<string | null>(null);
   const [mediaMime, setMediaMime] = useState<string>("image/jpeg");
   const [mediaName, setMediaName] = useState<string>("media.jpg");
 
-  const { isLoaded, isSignedIn, getToken } = useAuth();
-  const flatListRef = useRef<FlatList>(null);
-  const typingTimerRef = useRef<ReturnType<typeof setTimeout>>(null);
   const [selectedMessages, setSelectedMessages] = useState<string[]>([]);
 
+  const flatListRef = useRef<FlatList>(null);
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /*
+   * =========================================================
+   * CURRENT CONVERSATION
+   * =========================================================
+   *
+   * First use selectedConversation.
+   * Otherwise find it from conversations list.
+   */
+
   const currentConversation =
-    selectedConversation?._id === id
+    selectedConversation && String(selectedConversation._id) === String(id)
       ? selectedConversation
-      : conversations.find((c) => c._id === id);
+      : conversations.find(
+          (conversation) => String(conversation._id) === String(id),
+        );
 
   const partner = currentConversation?.participant;
 
-  useEffect(() => {
-    if (!id || !isLoaded || !isSignedIn) return;
-    
-    let cancelled = false;
-    
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        const token = await getToken();
-        if (!token) return;
+  /*
+   * =========================================================
+   * UNIQUE MESSAGES
+   * =========================================================
+   */
 
-        const { data: convData } = await api.get(`/api/messages/conversations/${id}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        
-        const { data: msgData } = await api.get(`/api/messages/conversations/${id}/messages`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+  const uniqueMessages = useMemo(() => {
+    const seen = new Set<string>();
+    const result: Message[] = [];
 
-        if (!cancelled) {
-          if (convData.success) setSelectedConversation(convData.conversation);
-          if (msgData.success) setMessages(msgData.messages);
+    for (const message of messages || []) {
+      if (!message) continue;
+
+      /*
+       * Only show messages belonging to
+       * the currently opened conversation.
+       */
+      if (
+        message.conversationId &&
+        String(message.conversationId) !== String(id)
+      ) {
+        continue;
+      }
+
+      const messageId = String(message._id || "");
+
+      if (messageId) {
+        if (seen.has(messageId)) {
+          continue;
         }
-      } catch (err) {
-        console.error("Fetch Data Error:", err);
+
+        seen.add(messageId);
+      }
+
+      result.push(message);
+    }
+
+    return result;
+  }, [messages, id]);
+
+  /*
+   * =========================================================
+   * LOAD CONVERSATION MESSAGES
+   * =========================================================
+   *
+   * IMPORTANT:
+   *
+   * We DO NOT call:
+   *
+   * /conversations/:id
+   *
+   * anymore.
+   *
+   * The conversation is already available from the
+   * conversations list.
+   *
+   * We only need:
+   *
+   * /conversations/:id/messages
+   *
+   * Backend already validates the conversation and returns
+   * the conversation information as well.
+   */
+
+  useEffect(() => {
+    if (!id) {
+      setLoading(false);
+      setError("Invalid conversation ID");
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadMessages = async () => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        console.log("💬 Loading messages for conversation:", id);
+
+        // `api` is the shared Axios instance from AppContext.
+        // Its Clerk interceptor attaches the Authorization token.
+        const response = await api.get<{
+          success: boolean;
+          messages?: Message[];
+          conversation?: any;
+          message?: string;
+        }>(`/api/messages/conversations/${id}/messages`, {
+          headers: {
+            "Cache-Control": "no-cache",
+            Pragma: "no-cache",
+          },
+          timeout: 10000,
+        });
+
+        if (cancelled) return;
+
+        if (!response.data?.success) {
+          throw new Error(response.data?.message || "Failed to load messages");
+        }
+
+        const serverMessages = response.data.messages || [];
+        const seen = new Set<string>();
+
+        const cleanedMessages = serverMessages.filter((message: Message) => {
+          if (!message) return false;
+
+          // Never mix messages from another conversation.
+          if (
+            message.conversationId &&
+            String(message.conversationId) !== String(id)
+          ) {
+            return false;
+          }
+
+          const messageId = String(message._id || "");
+          if (!messageId) return true;
+          if (seen.has(messageId)) return false;
+
+          seen.add(messageId);
+          return true;
+        });
+
+        // Replace the global message list only after the request succeeds.
+        setMessages(cleanedMessages);
+
+        // The messages endpoint currently returns only conversation metadata
+        // (without participant). Keep the already-loaded participant intact.
+        if (response.data.conversation?.participant) {
+          setSelectedConversation(response.data.conversation);
+        }
+
+        console.log(`✅ Loaded ${cleanedMessages.length} messages`);
+      } catch (error: any) {
+        if (cancelled) return;
+
+        console.error(
+          "❌ Chat Messages Error:",
+          error?.response?.data || error?.message || error,
+        );
+
+        let message = "Unable to load messages.";
+
+        if (error?.code === "ECONNABORTED" || error?.code === "ETIMEDOUT") {
+          message = "Server took too long to respond.";
+        } else if (error?.response?.status === 401) {
+          message = "Authentication expired. Please sign in again.";
+        } else if (error?.response?.status === 403) {
+          message = "You are not allowed to access this conversation.";
+        } else if (error?.response?.status === 404) {
+          message = "Conversation not found.";
+        } else if (error?.response?.data?.message) {
+          message = error.response.data.message;
+        } else if (error?.message === "Network Error") {
+          message = "Cannot connect to the backend server.";
+        }
+
+        setError(message);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     };
 
-    fetchData();
-    
-    return () => { cancelled = true; };
+    loadMessages();
+
+    return () => {
+      cancelled = true;
+    };
+    // IMPORTANT: only reload when the opened conversation ID changes.
+    // Do not depend on context values/setters here; they can cause an
+    // unnecessary request cycle while messages/conversation state updates.
   }, [id]);
 
-  const startVoiceCall = () => {
-    if (!selectedConversation || !partner) return;
-    router.push({ pathname: "/call/[id]", params: { id: selectedConversation._id, type: "voice" } });
+  /*
+   * =========================================================
+   * CLEANUP TYPING TIMER
+   * =========================================================
+   */
+
+  useEffect(() => {
+    return () => {
+      if (typingTimerRef.current) {
+        clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  /*
+   * =========================================================
+   * AUTO SCROLL
+   * =========================================================
+   */
+
+  useEffect(() => {
+    if (uniqueMessages.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      flatListRef.current?.scrollToEnd({
+        animated: true,
+      });
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [uniqueMessages.length]);
+
+  /*
+   * =========================================================
+   * BACK
+   * =========================================================
+   */
+
+  const goBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/(tabs)");
+    }
   };
+
+  /*
+   * =========================================================
+   * RETRY
+   * =========================================================
+   */
+
+  const retryLoadMessages = () => {
+    setError(null);
+
+    /*
+     * Force effect by changing loading state first.
+     * The actual effect will run normally on route mount.
+     */
+    setLoading(true);
+
+    /*
+     * Direct retry request.
+     */
+    if (!id) {
+      setLoading(false);
+      return;
+    }
+
+    let active = true;
+
+    const retry = async () => {
+      try {
+        console.log("🔄 Retrying messages:", id);
+
+        const response = await api.get<{
+          success: boolean;
+          messages?: Message[];
+          conversation?: any;
+          message?: string;
+        }>(`/api/messages/conversations/${id}/messages`, {
+          headers: {
+            "Cache-Control": "no-cache",
+          },
+          timeout: 10000,
+        });
+
+        if (!active) {
+          return;
+        }
+
+        if (!response.data?.success) {
+          throw new Error(response.data?.message || "Failed to load messages");
+        }
+
+        const serverMessages = response.data.messages || [];
+
+        const seen = new Set<string>();
+
+        const cleanedMessages = serverMessages.filter((message: Message) => {
+          if (!message) {
+            return false;
+          }
+
+          if (
+            message.conversationId &&
+            String(message.conversationId) !== String(id)
+          ) {
+            return false;
+          }
+
+          const messageId = String(message._id || "");
+
+          if (!messageId) {
+            return true;
+          }
+
+          if (seen.has(messageId)) {
+            return false;
+          }
+
+          seen.add(messageId);
+
+          return true;
+        });
+
+        setMessages(cleanedMessages);
+        setError(null);
+
+        console.log(`✅ Retry successful: ${cleanedMessages.length} messages`);
+      } catch (error: any) {
+        if (!active) {
+          return;
+        }
+
+        console.error(
+          "❌ Retry Messages Error:",
+          error?.response?.data || error?.message || error,
+        );
+
+        setError(error?.response?.data?.message || "Unable to load messages.");
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    retry();
+
+    return () => {
+      active = false;
+    };
+  };
+
+  /*
+   * =========================================================
+   * VOICE CALL
+   * =========================================================
+   */
+
+  const startVoiceCall = () => {
+    if (!currentConversation || !partner) {
+      return;
+    }
+
+    router.push({
+      pathname: "/call/[id]",
+      params: {
+        id: currentConversation._id,
+        type: "voice",
+      },
+    });
+  };
+
+  /*
+   * =========================================================
+   * VIDEO CALL
+   * =========================================================
+   */
 
   const startVideoCall = () => {
-    if (!selectedConversation || !partner) return;
-    router.push({ pathname: "/call/[id]", params: { id: selectedConversation._id, type: "video" } });
+    if (!currentConversation || !partner) {
+      return;
+    }
+
+    router.push({
+      pathname: "/call/[id]",
+      params: {
+        id: currentConversation._id,
+        type: "video",
+      },
+    });
   };
 
+  /*
+   * =========================================================
+   * DELETE CHAT
+   * =========================================================
+   */
+
   const deleteChat = () => {
-    const msg = `Delete this chat? This cannot be undone.`;
-    Alert.alert("Delete Chat", msg, [
-      { text: "Cancel", style: "cancel" },
+    if (!currentConversation) {
+      return;
+    }
+
+    Alert.alert("Delete Chat", "Delete this chat? This cannot be undone.", [
+      {
+        text: "Cancel",
+        style: "cancel",
+      },
       {
         text: "Delete",
         style: "destructive",
+
         onPress: async () => {
           try {
-            const { data } = await api.delete(`/api/messages/conversations/${selectedConversation?._id}`);
-            if (data.success) {
-              setConversations((prev) => prev.filter((c) => c._id !== selectedConversation?._id));
+            const response = await api.delete(
+              `/api/messages/conversations/${currentConversation._id}`,
+            );
+
+            if (response.data?.success) {
+              setConversations((previous) =>
+                previous.filter(
+                  (conversation) =>
+                    String(conversation._id) !==
+                    String(currentConversation._id),
+                ),
+              );
+
               setSelectedConversation(null);
-              
-              if (router.canGoBack()) router.back();
-              else router.replace("/(tabs)");
+              setMessages([]);
+              setSelectedMessages([]);
+
+              goBack();
             }
-          } catch (error) {
-            Alert.alert("Error", "Failed to delete chat");
+          } catch (error: any) {
+            console.error("Delete Chat Error:", error?.response?.data || error);
+
+            Alert.alert(
+              "Error",
+              error?.response?.data?.message || "Failed to delete chat",
+            );
           }
         },
       },
     ]);
   };
 
+  /*
+   * =========================================================
+   * PICK MEDIA
+   * =========================================================
+   */
+
   const pickMedia = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("Permission needed", "Allow access to your photos to change avatar.");
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images", "videos"],
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]) {
-      const assets = result.assets[0];
-      setMediaUri(assets.uri);
-      setMediaMime(assets.mimeType || "image/jpeg");
-      setMediaName(assets.fileName || (assets.mimeType?.startsWith("video") ? "video.mp4" : " photo.jpg"));
+    try {
+      const { status } =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+      if (status !== "granted") {
+        Alert.alert(
+          "Permission needed",
+          "Allow access to your photos to send images or videos.",
+        );
+
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images", "videos"],
+        quality: 0.8,
+      });
+
+      if (result.canceled || !result.assets?.[0]) {
+        return;
+      }
+
+      const asset = result.assets[0];
+
+      setMediaUri(asset.uri);
+
+      setMediaMime(
+        asset.mimeType || (asset.type === "video" ? "video/mp4" : "image/jpeg"),
+      );
+
+      setMediaName(
+        asset.fileName || (asset.type === "video" ? "video.mp4" : "photo.jpg"),
+      );
+    } catch (error) {
+      console.error("Pick Media Error:", error);
+
+      Alert.alert("Error", "Unable to select media.");
     }
   };
 
-  const handleTyping = (val: string) => {
-    setText(val);
-    const target = { receiverId: partner?._id };
-    if (!target.receiverId) return;
-    sendWsEvent({ type: "typing", ...target, isTyping: true });
+  /*
+   * =========================================================
+   * TYPING
+   * =========================================================
+   */
 
-    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+  const handleTyping = (value: string) => {
+    setText(value);
+
+    if (!partner?._id) {
+      return;
+    }
+
+    const target = {
+      receiverId: partner._id,
+    };
+
+    sendWsEvent({
+      type: "typing",
+      ...target,
+      isTyping: true,
+    });
+
+    if (typingTimerRef.current) {
+      clearTimeout(typingTimerRef.current);
+    }
+
     typingTimerRef.current = setTimeout(() => {
-      sendWsEvent({ type: "typing", ...target, isTyping: false });
+      sendWsEvent({
+        type: "typing",
+        ...target,
+        isTyping: false,
+      });
     }, 1500);
   };
 
-  const typingEntries = Object.entries(typingUsers).filter(
-    ([uid, isTyping]) => {
-      if (!isTyping || uid === auth.user?._id) return false;
-      return partner?._id === uid;
+  /*
+   * =========================================================
+   * TYPING USERS
+   * =========================================================
+   */
+
+  const typingEntries = Object.entries(typingUsers || {}).filter(
+    ([userId, isTyping]) => {
+      if (!isTyping) {
+        return false;
+      }
+
+      if (userId === auth.user?._id) {
+        return false;
+      }
+
+      return partner?._id === userId;
     },
   );
 
+  /*
+   * =========================================================
+   * SEND MESSAGE
+   * =========================================================
+   */
+
   const send = async () => {
-    if ((!text.trim() && !mediaUri) || !selectedConversation || !partner) return;
+    const trimmedText = text.trim();
+
+    if (
+      (!trimmedText && !mediaUri) ||
+      !currentConversation ||
+      !partner ||
+      sending
+    ) {
+      return;
+    }
+
     setSending(true);
+
     try {
       const formData = new FormData();
-      formData.append("receiverId", partner._id);
-      if (text.trim()) formData.append("text", text.trim());
 
+      formData.append("receiverId", partner._id);
+
+      formData.append("conversationId", currentConversation._id);
+
+      if (trimmedText) {
+        formData.append("text", trimmedText);
+      }
+
+      /*
+       * Attach media.
+       */
       if (mediaUri) {
         if (Platform.OS === "web") {
           const response = await fetch(mediaUri);
+
           const blob = await response.blob();
-          const extension = mediaMime?.startsWith("video") ? "mp4" : "jpg";
-          formData.append("file", blob, `upload.${extension}`);
+
+          const isVideo = mediaMime?.startsWith("video");
+
+          const extension = isVideo ? "mp4" : "jpg";
+
+          formData.append("file", blob, mediaName || `upload.${extension}`);
         } else {
           formData.append("file", {
             uri: mediaUri,
             type: mediaMime || "image/jpeg",
-            name: mediaMime?.startsWith("video") ? "video.mp4" : "image.jpg",
+            name:
+              mediaName ||
+              (mediaMime?.startsWith("video") ? "video.mp4" : "image.jpg"),
           } as any);
         }
       }
 
-      const { data } = await api.post<{ success: boolean; message: Message }>(
-        "/api/messages/send",
-        formData
-      );
+      const response = await api.post<{
+        success: boolean;
+        message: Message;
+      }>("/api/messages/send", formData);
 
-      if (data.success) {
-        setMessages((prev) => [...prev, data.message]);
-        const target = { receiverId: partner._id };
-        sendWsEvent({ type: "message", ...target, payload: data.message });
+      const newMessage = response.data?.message;
+
+      if (response.data?.success && newMessage) {
+        setMessages((previous) => {
+          const newId = String(newMessage._id || "");
+
+          if (
+            newId &&
+            previous.some((message) => String(message._id) === newId)
+          ) {
+            return previous;
+          }
+
+          return [...previous, newMessage];
+        });
+
         setText("");
         setMediaUri(null);
+        setMediaMime("image/jpeg");
+        setMediaName("media.jpg");
+
+        if (partner?._id) {
+          sendWsEvent({
+            type: "typing",
+            receiverId: partner._id,
+            isTyping: false,
+          });
+        }
+
+        if (typingTimerRef.current) {
+          clearTimeout(typingTimerRef.current);
+
+          typingTimerRef.current = null;
+        }
+      } else {
+        throw new Error("Message sending failed");
       }
-    } catch (err: any) {
-      Alert.alert("Error", err?.response?.data?.message || "Failed to send message");
+    } catch (error: any) {
+      console.error(
+        "Send Message Error:",
+        error?.response?.data || error?.message || error,
+      );
+
+      Alert.alert(
+        "Error",
+        error?.response?.data?.message || "Failed to send message",
+      );
     } finally {
-      setSending(false); 
+      setSending(false);
     }
   };
+
+  /*
+   * =========================================================
+   * DELETE SELECTED MESSAGES
+   * =========================================================
+   */
+
+  const deleteSelectedMessages = async () => {
+    if (selectedMessages.length === 0) {
+      return;
+    }
+
+    try {
+      for (const messageId of selectedMessages) {
+        await api.delete(`/api/messages/messages/${messageId}`);
+      }
+
+      setMessages((previous) =>
+        previous.filter(
+          (message) => !selectedMessages.includes(String(message._id)),
+        ),
+      );
+
+      setSelectedMessages([]);
+    } catch (error: any) {
+      console.error(
+        "Delete Selected Messages Error:",
+        error?.response?.data || error,
+      );
+
+      Alert.alert(
+        "Error",
+        error?.response?.data?.message || "Failed to delete messages",
+      );
+    }
+  };
+
+  /*
+   * =========================================================
+   * MESSAGE SELECTION
+   * =========================================================
+   */
+
+  const toggleMessageSelection = (messageId: string) => {
+    setSelectedMessages((previous) => {
+      if (previous.includes(messageId)) {
+        return previous.filter((id) => id !== messageId);
+      }
+
+      return [...previous, messageId];
+    });
+  };
+
+  /*
+   * =========================================================
+   * NO CONVERSATION
+   * =========================================================
+   */
 
   if (!currentConversation || !partner) {
     return (
       <SafeAreaView style={styles.safe}>
-        <TouchableOpacity 
-          style={styles.backBtn} 
-          onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)")}
-        >
+        <TouchableOpacity style={styles.backBtn} onPress={goBack}>
           <Ionicons name="chevron-back" size={24} color={Colors.onSurface} />
         </TouchableOpacity>
-        <ActivityIndicator size="large" color={Colors.primary} />
+
+        {loading ? (
+          <View
+            style={{
+              flex: 1,
+              justifyContent: "center",
+              alignItems: "center",
+            }}
+          >
+            <ActivityIndicator size="large" color={Colors.primary} />
+
+            <Text
+              style={{
+                marginTop: 12,
+                color: Colors.onSurfaceVariant,
+              }}
+            >
+              Loading conversation...
+            </Text>
+          </View>
+        ) : (
+          <View
+            style={{
+              flex: 1,
+              justifyContent: "center",
+              alignItems: "center",
+              paddingHorizontal: 30,
+            }}
+          >
+            <Text
+              style={{
+                color: Colors.onSurface,
+                fontSize: 16,
+                fontWeight: "600",
+                textAlign: "center",
+              }}
+            >
+              Conversation not found
+            </Text>
+
+            {error && (
+              <Text
+                style={{
+                  color: Colors.onSurfaceVariant,
+                  marginTop: 8,
+                  textAlign: "center",
+                }}
+              >
+                {error}
+              </Text>
+            )}
+
+            <TouchableOpacity
+              onPress={goBack}
+              style={{
+                marginTop: 20,
+                paddingHorizontal: 20,
+                paddingVertical: 10,
+                borderRadius: 10,
+                backgroundColor: Colors.primary,
+              }}
+            >
+              <Text
+                style={{
+                  color: Colors.onPrimary,
+                  fontWeight: "600",
+                }}
+              >
+                Go Back
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </SafeAreaView>
     );
   }
 
-  const headerName = partner.name;
-  const headerAvatar = partner.avatar;
-  const headerSub = partner.isOnline ? "Online" : partner.lastSeen ? "Last seen recently" : "Offline";
+  /*
+   * =========================================================
+   * HEADER DATA
+   * =========================================================
+   */
+
+  const headerName = partner.name || "User";
+
+  const headerAvatar = partner.avatar || "";
+
+  const headerSub = partner.isOnline
+    ? "Online"
+    : partner.lastSeen
+      ? "Last seen recently"
+      : "Offline";
+
+  /*
+   * =========================================================
+   * RENDER
+   * =========================================================
+   */
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+      {/* HEADER */}
+
       <View style={styles.header}>
         {selectedMessages.length > 0 ? (
-          <TouchableOpacity 
-            style={styles.backBtn} 
+          <TouchableOpacity
+            style={styles.backBtn}
             onPress={() => setSelectedMessages([])}
           >
             <Ionicons name="close" size={24} color={Colors.onSurface} />
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity 
-            style={styles.backBtn} 
-            onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)")}
-          >
+          <TouchableOpacity style={styles.backBtn} onPress={goBack}>
             <Ionicons name="chevron-back" size={24} color={Colors.onSurface} />
           </TouchableOpacity>
         )}
 
-        <Avatar name={headerName} src={headerAvatar} size={38} online={partner?.isOnline} />
+        <Avatar
+          name={headerName}
+          src={headerAvatar}
+          size={38}
+          online={partner.isOnline}
+        />
 
         <View style={styles.headerInfo}>
           <Text style={styles.headerName} numberOfLines={1}>
-            {selectedMessages.length > 0 ? `${selectedMessages.length} Selected` : headerName}
-            <Text style={styles.headerHandle}>@{selectedMessages.length > 0 ? " " : partner?.handle}</Text>
+            {selectedMessages.length > 0
+              ? `${selectedMessages.length} Selected`
+              : headerName}
+
+            {selectedMessages.length === 0 && (
+              <Text style={styles.headerHandle}>@{partner.handle || ""}</Text>
+            )}
           </Text>
-          <Text style={[styles.headerSub, partner?.isOnline && { color: Colors.online }]}>
+
+          <Text
+            style={[
+              styles.headerSub,
+              partner.isOnline && {
+                color: Colors.online,
+              },
+            ]}
+          >
             {selectedMessages.length > 0 ? "" : headerSub}
           </Text>
         </View>
 
         {selectedMessages.length > 0 && (
-          <TouchableOpacity 
-            style={styles.backBtn} 
-            onPress={async () => {
-              try {
-                for (const messageId of selectedMessages) {
-                  await api.delete(`/api/messages/messages/${messageId}`);
-                }
-                setMessages((prev) => prev.filter((m) => !selectedMessages.includes(m._id)));
-                setSelectedMessages([]);
-              } catch (error) {
-                Alert.alert("Error", "Failed to delete messages");
-              }
-            }}
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={deleteSelectedMessages}
           >
             <Ionicons name="trash" size={24} color={Colors.error} />
           </TouchableOpacity>
@@ -277,17 +941,33 @@ export default function ChatScreen() {
         {selectedMessages.length === 0 && (
           <View style={styles.headerActions}>
             <TouchableOpacity style={styles.backBtn} onPress={startVoiceCall}>
-              <Ionicons name="call-outline" size={20} color={Colors.onSurfaceVariant} />
+              <Ionicons
+                name="call-outline"
+                size={20}
+                color={Colors.onSurfaceVariant}
+              />
             </TouchableOpacity>
+
             <TouchableOpacity style={styles.backBtn} onPress={startVideoCall}>
-              <Ionicons name="videocam-outline" size={20} color={Colors.onSurfaceVariant} />
+              <Ionicons
+                name="videocam-outline"
+                size={20}
+                color={Colors.onSurfaceVariant}
+              />
             </TouchableOpacity>
+
             <TouchableOpacity style={styles.backBtn} onPress={deleteChat}>
-              <Ionicons name="trash-outline" size={20} color={Colors.onSurfaceVariant} />
+              <Ionicons
+                name="trash-outline"
+                size={20}
+                color={Colors.onSurfaceVariant}
+              />
             </TouchableOpacity>
           </View>
         )}
       </View>
+
+      {/* CHAT */}
 
       <KeyboardAvoidingView
         style={styles.kav}
@@ -295,61 +975,219 @@ export default function ChatScreen() {
         keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
       >
         {loading ? (
-          <ActivityIndicator style={{ flex: 1 }} color={Colors.primary} />
+          <View
+            style={{
+              flex: 1,
+              justifyContent: "center",
+              alignItems: "center",
+            }}
+          >
+            <ActivityIndicator size="large" color={Colors.primary} />
+
+            <Text
+              style={{
+                marginTop: 12,
+                color: Colors.onSurfaceVariant,
+              }}
+            >
+              Loading messages...
+            </Text>
+          </View>
+        ) : error ? (
+          <View
+            style={{
+              flex: 1,
+              justifyContent: "center",
+              alignItems: "center",
+              paddingHorizontal: 30,
+            }}
+          >
+            <Ionicons
+              name="chatbubble-ellipses-outline"
+              size={42}
+              color={Colors.onSurfaceVariant}
+            />
+
+            <Text
+              style={{
+                marginTop: 12,
+                fontSize: 16,
+                fontWeight: "600",
+                color: Colors.onSurface,
+                textAlign: "center",
+              }}
+            >
+              Unable to load messages
+            </Text>
+
+            <Text
+              style={{
+                marginTop: 8,
+                color: Colors.onSurfaceVariant,
+                textAlign: "center",
+              }}
+            >
+              {error}
+            </Text>
+
+            <TouchableOpacity
+              onPress={retryLoadMessages}
+              style={{
+                marginTop: 18,
+                paddingHorizontal: 20,
+                paddingVertical: 10,
+                borderRadius: 10,
+                backgroundColor: Colors.primary,
+              }}
+            >
+              <Text
+                style={{
+                  color: Colors.onPrimary,
+                  fontWeight: "600",
+                }}
+              >
+                Try Again
+              </Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <FlatList
-            data={messages}
             ref={flatListRef}
-            keyExtractor={(m) => m._id}
+            data={uniqueMessages}
             extraData={selectedMessages}
-            contentContainerStyle={styles.messageList}
-            renderItem={({ item: msg, index }) => {
-              const isMine = msg.sender === auth.user?._id;
-              const prev = messages[index - 1];
-              const showGap = !prev || prev.sender !== msg.sender;
-              const isSelected = selectedMessages.includes(msg._id);
+            contentContainerStyle={[
+              styles.messageList,
+              uniqueMessages.length === 0 && {
+                flexGrow: 1,
+                justifyContent: "center",
+              },
+            ]}
+            keyExtractor={(message, index) => {
+              const messageId = String(message?._id || "");
+
+              if (messageId) {
+                return `message-${messageId}`;
+              }
+
+              return `message-fallback-${index}`;
+            }}
+            renderItem={({ item: message, index }) => {
+              const isMine = String(message.sender) === String(auth.user?._id);
+
+              const previousMessage = uniqueMessages[index - 1];
+
+              const showGap =
+                !previousMessage ||
+                String(previousMessage.sender) !== String(message.sender);
+
+              const messageId = String(message._id);
+
+              const isSelected = selectedMessages.includes(messageId);
+
               const isSelectionMode = selectedMessages.length > 0;
 
               return (
-                <View style={showGap && index > 0 ? { marginTop: 10 } : {}}>
+                <View
+                  style={
+                    showGap && index > 0
+                      ? {
+                          marginTop: 10,
+                        }
+                      : undefined
+                  }
+                >
                   <Bubble
-                    msg={msg}
+                    msg={message}
                     isMine={isMine}
                     isSelected={isSelected}
                     isSelectionMode={isSelectionMode}
-                    onSelect={(messageId) => {
-                      if (selectedMessages.includes(messageId)) {
-                        setSelectedMessages((prev) => prev.filter((id) => id !== messageId));
-                      } else {
-                        setSelectedMessages((prev) => [...prev, messageId]);
-                      }
-                    }}
+                    onSelect={toggleMessageSelection}
                   />
                 </View>
               );
             }}
-            onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
+            onContentSizeChange={() => {
+              setTimeout(() => {
+                flatListRef.current?.scrollToEnd({
+                  animated: false,
+                });
+              }, 50);
+            }}
+            ListEmptyComponent={
+              <View
+                style={{
+                  alignItems: "center",
+                  paddingHorizontal: 30,
+                }}
+              >
+                <Ionicons
+                  name="chatbubble-outline"
+                  size={38}
+                  color={Colors.outlineVariant}
+                />
+
+                <Text
+                  style={{
+                    marginTop: 10,
+                    color: Colors.onSurfaceVariant,
+                    textAlign: "center",
+                  }}
+                >
+                  No messages yet
+                </Text>
+
+                <Text
+                  style={{
+                    marginTop: 4,
+                    color: Colors.outlineVariant,
+                    textAlign: "center",
+                  }}
+                >
+                  Send a message to start the conversation.
+                </Text>
+              </View>
+            }
+            removeClippedSubviews={Platform.OS !== "web"}
           />
         )}
 
+        {/* TYPING INDICATOR */}
+
         {typingEntries.length > 0 && (
           <View style={styles.typingRow}>
-            {typingEntries.map(([uid]) => {
-              const u = users.find((x) => x._id === uid) || partner;
+            {typingEntries.map(([userId]) => {
+              const typingUser =
+                users.find((user) => user._id === userId) || partner;
+
               return (
-                <Text key={uid} style={styles.typingText}>
-                  {u?.name || "Someone"} is typing...
+                <Text key={`typing-${userId}`} style={styles.typingText}>
+                  {typingUser?.name || "Someone"} is typing...
                 </Text>
               );
             })}
           </View>
         )}
 
+        {/* INPUT BAR */}
+
         <View style={styles.inputBar}>
           {mediaUri && (
             <View style={styles.mediaPreview}>
-              <Image source={{ uri: mediaUri }} style={styles.mediaThumb} />
-              <TouchableOpacity style={styles.mediaRemove} onPress={() => setMediaUri(null)}>
+              <Image
+                source={{
+                  uri: mediaUri,
+                }}
+                style={styles.mediaThumb}
+              />
+
+              <TouchableOpacity
+                style={styles.mediaRemove}
+                onPress={() => {
+                  setMediaUri(null);
+                  setMediaMime("image/jpeg");
+                  setMediaName("media.jpg");
+                }}
+              >
                 <Ionicons name="close-circle" size={20} color="#fff" />
               </TouchableOpacity>
             </View>
@@ -357,7 +1195,11 @@ export default function ChatScreen() {
 
           <View style={styles.inputRow}>
             <TouchableOpacity style={styles.attachBtn} onPress={pickMedia}>
-              <Ionicons name="image-outline" size={22} color={Colors.onSurfaceVariant} />
+              <Ionicons
+                name="image-outline"
+                size={22}
+                color={Colors.onSurfaceVariant}
+              />
             </TouchableOpacity>
 
             <TextInput
@@ -377,7 +1219,10 @@ export default function ChatScreen() {
             >
               <LinearGradient
                 colors={[Colors.primary, Colors.primaryContainer]}
-                style={[styles.sendBtn, !text.trim() && !mediaUri && styles.sendBtnDisabled]}
+                style={[
+                  styles.sendBtn,
+                  !text.trim() && !mediaUri && styles.sendBtnDisabled,
+                ]}
               >
                 {sending ? (
                   <ActivityIndicator color="#fff" size="small" />

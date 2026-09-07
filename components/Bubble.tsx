@@ -1,4 +1,4 @@
-import { styles } from "@/assets/styles/Bubble.styles";
+import { styles } from "../assets/styles/Bubble.styles";
 import { LinearGradient } from "expo-linear-gradient";
 import { Image, Linking, Text, TouchableOpacity, View } from "react-native";
 import { Colors } from "../constants/Colors";

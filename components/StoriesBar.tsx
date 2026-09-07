@@ -1,12 +1,19 @@
-import { View, Text, FlatList, TouchableOpacity, Alert, Platform } from "react-native";
+import {
+  View,
+  Text,
+  FlatList,
+  TouchableOpacity,
+  Alert,
+  Platform,
+} from "react-native";
 import React, { useEffect, useState } from "react";
-import { styles } from "@/assets/styles/StoriesBar.styles";
+import { styles } from "../assets/styles/StoriesBar.styles";
 import { UserStory } from "../types";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "../constants/Colors";
 import * as ImagePicker from "expo-image-picker";
 import Avatar from "./Avatar";
-import { api, useApp } from "../context/AppContext";
+import { useApp } from "../context/AppContext";
 
 interface StoriesBarProps {
   onViewStory: (us: UserStory) => void;
@@ -15,7 +22,7 @@ interface StoriesBarProps {
 export default function StoriesBar({ onViewStory }: StoriesBarProps) {
   const [uploading, setUploading] = useState(false);
 
-  const { userStories, fetchStories } = useApp();
+  const { userStories, fetchStories, api } = useApp();
 
   useEffect(() => {
     if (userStories.length === 0) {
@@ -27,7 +34,10 @@ export default function StoriesBar({ onViewStory }: StoriesBarProps) {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (status !== "granted") {
-      Alert.alert("Permission needed", "Allow access to your photos to post a story.");
+      Alert.alert(
+        "Permission needed",
+        "Allow access to your photos to post a story.",
+      );
       return;
     }
 
@@ -75,7 +85,7 @@ export default function StoriesBar({ onViewStory }: StoriesBarProps) {
       contentContainerStyle={styles.container}
       data={[{ _addStory: true }, ...userStories]}
       keyExtractor={(item: any, index) =>
-        item._addStory ? "add" : item.user?._id ?? String(index)
+        item._addStory ? "add" : (item.user?._id ?? String(index))
       }
       renderItem={({ item }) => {
         if (item._addStory) {

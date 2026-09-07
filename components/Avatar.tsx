@@ -1,4 +1,4 @@
-import { styles } from "@/assets/styles/Avatar.styles";
+import { styles } from "../assets/styles/Avatar.styles";
 import { Image, Text, View } from "react-native";
 
 const PALETTE = ["#4652b0", "#933880", "#3946a4", "#6750A4", "#7965AF"];
