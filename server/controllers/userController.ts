@@ -15,7 +15,8 @@ export const getProfile = async (
     let user = await User.findById(userId);
 
     if (!user) {
-      const clerkUser = await clerkClient.users.getUser(userId);
+      const clerkUser =
+        await clerkClient.users.getUser(userId);
 
       user = await User.create({
         _id: clerkUser.id,
@@ -198,93 +199,69 @@ export const updateProfile = async (
 ) => {
   try {
     const userId = req.user!.id;
+
     const { name, handle, bio } = req.body;
+
     const file = req.file;
 
     console.log("========================================");
     console.log("PROFILE UPDATE STARTED");
-    console.log("========================================");
-
     console.log("User ID:", userId);
     console.log("Name:", name);
     console.log("Handle:", handle);
     console.log("Bio:", bio);
     console.log("Avatar received:", Boolean(file));
 
-    const updateData: Record<string, unknown> = {
-      updatedAt: new Date(),
-    };
-
-    // ==============================
-    // NAME
-    // ==============================
-    if (typeof name === "string") {
-      updateData.name = name.trim();
-    }
-
-    // ==============================
-    // HANDLE
-    // ==============================
-    if (typeof handle === "string") {
-      updateData.handle = handle
-        .trim()
-        .toLowerCase();
-    }
-
-    // ==============================
-    // BIO
-    // ==============================
-    if (typeof bio === "string") {
-      updateData.bio = bio.trim();
-    }
-
-    // ==============================
-    // AVATAR
-    // ==============================
     if (file) {
-      console.log("----------------------------------------");
-      console.log("AVATAR FILE RECEIVED");
-      console.log("----------------------------------------");
+      console.log("Avatar details:", {
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size,
+      });
+    }
 
-      console.log("Original name:", file.originalname);
-      console.log("MIME type:", file.mimetype);
-      console.log("File size:", file.size);
-      console.log(
-        "Buffer available:",
-        Boolean(file.buffer),
+    // --------------------------------------------------
+    // 1. Find existing MongoDB user
+    // --------------------------------------------------
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      console.error(
+        "Profile update failed: user not found",
+        userId,
       );
-      console.log(
-        "Buffer length:",
-        file.buffer?.length || 0,
-      );
 
-      // Make sure the actual image data exists.
-      if (
-        !file.buffer ||
-        file.buffer.length === 0
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Avatar file was received but contains no data",
-        });
-      }
+      return res.status(404).json({
+        success: false,
+        message: "User profile not found",
+      });
+    }
 
-      console.log("----------------------------------------");
-      console.log("UPLOADING NEW AVATAR TO CLOUDINARY");
-      console.log("----------------------------------------");
+    console.log("Existing avatar:", user.avatar);
 
-      // IMPORTANT:
-      // Every upload gets a completely new public_id.
-      // Therefore a new selected image will always
-      // receive a new Cloudinary URL.
-      const uniquePublicId =
-        `avatar_${userId}_${Date.now()}`;
+    // --------------------------------------------------
+    // 2. Update normal profile fields
+    // --------------------------------------------------
 
-      console.log(
-        "Cloudinary public_id:",
-        uniquePublicId,
-      );
+    if (typeof name === "string") {
+      user.name = name.trim();
+    }
+
+    if (typeof handle === "string") {
+      user.handle = handle.trim().toLowerCase();
+    }
+
+    if (typeof bio === "string") {
+      user.bio = bio.trim();
+    }
+
+    // --------------------------------------------------
+    // 3. Upload new avatar
+    // --------------------------------------------------
+
+    if (file) {
+      console.log("Uploading NEW avatar to Cloudinary...");
 
       const uploadResult = await new Promise<any>(
         (resolve, reject) => {
@@ -292,20 +269,9 @@ export const updateProfile = async (
             cloudinary.uploader.upload_stream(
               {
                 folder: "freechatting/avatars",
-
-                // Force a NEW Cloudinary asset.
-                public_id: uniquePublicId,
-
                 resource_type: "image",
-
-                // Do not reuse an existing asset.
-                overwrite: false,
-
-                // Make sure Cloudinary does not
-                // derive the public ID from filename.
-                use_filename: false,
-
                 unique_filename: true,
+                use_filename: false,
               },
               (error, result) => {
                 if (error) {
@@ -318,117 +284,115 @@ export const updateProfile = async (
                   return;
                 }
 
-                console.log(
-                  "Cloudinary upload completed",
-                );
-
                 resolve(result);
               },
             );
 
-          uploadStream.on(
-            "error",
-            (error) => {
-              console.error(
-                "Cloudinary stream error:",
-                error,
-              );
+          uploadStream.on("error", (error) => {
+            console.error(
+              "Cloudinary stream error:",
+              error,
+            );
 
-              reject(error);
-            },
-          );
+            reject(error);
+          });
 
-          // Send the actual image buffer
-          // received from Multer to Cloudinary.
           Readable.from(file.buffer).pipe(
             uploadStream,
           );
         },
       );
 
-      // ==============================
-      // VERIFY CLOUDINARY RESPONSE
-      // ==============================
       if (!uploadResult?.secure_url) {
         throw new Error(
-          "Cloudinary upload completed but no image URL was returned",
+          "Cloudinary upload completed but no secure URL was returned",
         );
       }
 
-      console.log("----------------------------------------");
-      console.log("NEW CLOUDINARY AVATAR URL:");
-      console.log(uploadResult.secure_url);
-      console.log("----------------------------------------");
-
-      // Save EXACTLY the new Cloudinary URL
-      // into MongoDB.
-      updateData.avatar =
+      const newAvatarUrl =
         uploadResult.secure_url;
-    }
 
-    // ==============================
-    // UPDATE MONGODB
-    // ==============================
-    console.log("----------------------------------------");
-    console.log("UPDATING MONGODB");
-    console.log("----------------------------------------");
-
-    console.log(
-      "MongoDB update data:",
-      updateData,
-    );
-
-    const user = await User.findByIdAndUpdate(
-      userId,
-      updateData,
-      {
-        returnDocument: "after",
-        runValidators: true,
-      },
-    );
-
-    // User does not exist in MongoDB.
-    if (!user) {
-      console.error(
-        "MongoDB user not found:",
-        userId,
+      console.log(
+        "NEW CLOUDINARY URL:",
+        newAvatarUrl,
       );
 
-      return res.status(404).json({
-        success: false,
-        message: "User profile not found",
-      });
+      // ------------------------------------------------
+      // IMPORTANT:
+      // Save the NEW Cloudinary URL directly
+      // into the MongoDB document.
+      // ------------------------------------------------
+
+      user.avatar = newAvatarUrl;
+
+      console.log(
+        "Avatar assigned to MongoDB user:",
+        user.avatar,
+      );
     }
 
-    // ==============================
-    // VERIFY SAVED DATA
-    // ==============================
-    console.log("----------------------------------------");
+    // --------------------------------------------------
+    // 4. Save MongoDB document
+    // --------------------------------------------------
+
+    user.updatedAt = new Date();
+
+    console.log("Saving MongoDB user...");
+
+    await user.save();
+
     console.log(
-      "PROFILE UPDATED SUCCESSFULLY",
+      "MongoDB save completed.",
     );
-    console.log("----------------------------------------");
 
-    console.log("MongoDB user ID:", user._id);
-    console.log("Saved name:", user.name);
-    console.log("Saved handle:", user.handle);
-    console.log("Saved bio:", user.bio);
-    console.log("Saved avatar:", user.avatar);
+    console.log(
+      "Avatar after save:",
+      user.avatar,
+    );
+
+    // --------------------------------------------------
+    // 5. Read the document again from MongoDB
+    // --------------------------------------------------
+
+    const freshUser =
+      await User.findById(userId);
+
+    if (!freshUser) {
+      throw new Error(
+        "User disappeared after profile update",
+      );
+    }
+
+    console.log(
+      "Fresh avatar read from MongoDB:",
+      freshUser.avatar,
+    );
+
+    console.log(
+      "PROFILE UPDATE COMPLETED",
+    );
 
     console.log("========================================");
-    console.log("PROFILE UPDATE FINISHED");
-    console.log("========================================");
+
+    // --------------------------------------------------
+    // 6. Return freshly-read MongoDB user
+    // --------------------------------------------------
 
     return res.json({
       success: true,
       message: "Profile updated successfully",
-      user,
+      user: freshUser,
     });
   } catch (error) {
     console.error(
       "========================================",
     );
-    console.error("PROFILE UPDATE ERROR:", error);
+
+    console.error(
+      "PROFILE UPDATE ERROR:",
+      error,
+    );
+
     console.error(
       "========================================",
     );
