@@ -201,7 +201,10 @@ export const updateProfile = async (
     const { name, handle, bio } = req.body;
     const file = req.file;
 
-    console.log("Profile update started");
+    console.log("========================================");
+    console.log("PROFILE UPDATE STARTED");
+    console.log("========================================");
+
     console.log("User ID:", userId);
     console.log("Name:", name);
     console.log("Handle:", handle);
@@ -212,26 +215,76 @@ export const updateProfile = async (
       updatedAt: new Date(),
     };
 
+    // ==============================
+    // NAME
+    // ==============================
     if (typeof name === "string") {
       updateData.name = name.trim();
     }
 
+    // ==============================
+    // HANDLE
+    // ==============================
     if (typeof handle === "string") {
-      updateData.handle = handle.trim().toLowerCase();
+      updateData.handle = handle
+        .trim()
+        .toLowerCase();
     }
 
+    // ==============================
+    // BIO
+    // ==============================
     if (typeof bio === "string") {
       updateData.bio = bio.trim();
     }
 
+    // ==============================
+    // AVATAR
+    // ==============================
     if (file) {
-      console.log("Avatar details:", {
-        name: file.originalname,
-        type: file.mimetype,
-        size: file.size,
-      });
+      console.log("----------------------------------------");
+      console.log("AVATAR FILE RECEIVED");
+      console.log("----------------------------------------");
 
-      console.log("Uploading avatar to Cloudinary");
+      console.log("Original name:", file.originalname);
+      console.log("MIME type:", file.mimetype);
+      console.log("File size:", file.size);
+      console.log(
+        "Buffer available:",
+        Boolean(file.buffer),
+      );
+      console.log(
+        "Buffer length:",
+        file.buffer?.length || 0,
+      );
+
+      // Make sure the actual image data exists.
+      if (
+        !file.buffer ||
+        file.buffer.length === 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Avatar file was received but contains no data",
+        });
+      }
+
+      console.log("----------------------------------------");
+      console.log("UPLOADING NEW AVATAR TO CLOUDINARY");
+      console.log("----------------------------------------");
+
+      // IMPORTANT:
+      // Every upload gets a completely new public_id.
+      // Therefore a new selected image will always
+      // receive a new Cloudinary URL.
+      const uniquePublicId =
+        `avatar_${userId}_${Date.now()}`;
+
+      console.log(
+        "Cloudinary public_id:",
+        uniquePublicId,
+      );
 
       const uploadResult = await new Promise<any>(
         (resolve, reject) => {
@@ -239,7 +292,20 @@ export const updateProfile = async (
             cloudinary.uploader.upload_stream(
               {
                 folder: "freechatting/avatars",
+
+                // Force a NEW Cloudinary asset.
+                public_id: uniquePublicId,
+
                 resource_type: "image",
+
+                // Do not reuse an existing asset.
+                overwrite: false,
+
+                // Make sure Cloudinary does not
+                // derive the public ID from filename.
+                use_filename: false,
+
+                unique_filename: true,
               },
               (error, result) => {
                 if (error) {
@@ -247,43 +313,70 @@ export const updateProfile = async (
                     "Cloudinary upload error:",
                     error,
                   );
+
                   reject(error);
                   return;
                 }
+
+                console.log(
+                  "Cloudinary upload completed",
+                );
 
                 resolve(result);
               },
             );
 
-          uploadStream.on("error", (error) => {
-            console.error(
-              "Cloudinary stream error:",
-              error,
-            );
-            reject(error);
-          });
+          uploadStream.on(
+            "error",
+            (error) => {
+              console.error(
+                "Cloudinary stream error:",
+                error,
+              );
 
+              reject(error);
+            },
+          );
+
+          // Send the actual image buffer
+          // received from Multer to Cloudinary.
           Readable.from(file.buffer).pipe(
             uploadStream,
           );
         },
       );
 
+      // ==============================
+      // VERIFY CLOUDINARY RESPONSE
+      // ==============================
       if (!uploadResult?.secure_url) {
         throw new Error(
           "Cloudinary upload completed but no image URL was returned",
         );
       }
 
-      updateData.avatar = uploadResult.secure_url;
+      console.log("----------------------------------------");
+      console.log("NEW CLOUDINARY AVATAR URL:");
+      console.log(uploadResult.secure_url);
+      console.log("----------------------------------------");
 
-      console.log(
-        "Avatar uploaded successfully:",
-        uploadResult.secure_url,
-      );
+      // Save EXACTLY the new Cloudinary URL
+      // into MongoDB.
+      updateData.avatar =
+        uploadResult.secure_url;
     }
 
-    console.log("Updating MongoDB");
+    // ==============================
+    // UPDATE MONGODB
+    // ==============================
+    console.log("----------------------------------------");
+    console.log("UPDATING MONGODB");
+    console.log("----------------------------------------");
+
+    console.log(
+      "MongoDB update data:",
+      updateData,
+    );
 
     const user = await User.findByIdAndUpdate(
       userId,
@@ -294,15 +387,37 @@ export const updateProfile = async (
       },
     );
 
+    // User does not exist in MongoDB.
     if (!user) {
+      console.error(
+        "MongoDB user not found:",
+        userId,
+      );
+
       return res.status(404).json({
         success: false,
         message: "User profile not found",
       });
     }
 
-    console.log("Profile updated successfully");
+    // ==============================
+    // VERIFY SAVED DATA
+    // ==============================
+    console.log("----------------------------------------");
+    console.log(
+      "PROFILE UPDATED SUCCESSFULLY",
+    );
+    console.log("----------------------------------------");
+
+    console.log("MongoDB user ID:", user._id);
+    console.log("Saved name:", user.name);
+    console.log("Saved handle:", user.handle);
+    console.log("Saved bio:", user.bio);
     console.log("Saved avatar:", user.avatar);
+
+    console.log("========================================");
+    console.log("PROFILE UPDATE FINISHED");
+    console.log("========================================");
 
     return res.json({
       success: true,
@@ -310,7 +425,13 @@ export const updateProfile = async (
       user,
     });
   } catch (error) {
-    console.error("Profile update error:", error);
+    console.error(
+      "========================================",
+    );
+    console.error("PROFILE UPDATE ERROR:", error);
+    console.error(
+      "========================================",
+    );
 
     return res.status(500).json({
       success: false,
