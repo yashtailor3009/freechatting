@@ -42,7 +42,8 @@
       "@clerk/expo",
       "expo-secure-store",
       "expo-web-browser",
-      "expo-image"
+      "expo-image",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true,
