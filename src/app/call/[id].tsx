@@ -83,9 +83,7 @@ export default function CallScreen() {
     selectedConversation?._id ||
     incomingCall?.conversationId;
 
-  // =========================
   // WEBRTC SETUP
-  // =========================
 
   useEffect(() => {
     let mounted = true;
@@ -129,9 +127,7 @@ export default function CallScreen() {
 
         pcRef.current = pc;
 
-        // =========================
         // RECEIVE ICE CANDIDATE
-        // =========================
 
         pc.onicecandidate = (event: any) => {
           if (!event.candidate) return;
@@ -144,9 +140,7 @@ export default function CallScreen() {
           });
         };
 
-        // =========================
         // RECEIVE REMOTE STREAM
-        // =========================
 
         pc.onaddstream = (event: any) => {
           if (!mounted) return;
@@ -156,9 +150,7 @@ export default function CallScreen() {
           }
         };
 
-        // =========================
         // GET MICROPHONE / CAMERA
-        // =========================
 
         const stream = await mediaDevices.getUserMedia({
           audio: true,
@@ -175,14 +167,16 @@ export default function CallScreen() {
 
         setLocalStream(stream);
 
-        pc.addStream(stream);
+        // ADD LOCAL TRACKS
+
+        stream.getTracks().forEach((track: any) => {
+          pc.addTrack(track, stream);
+        });
 
         // Load RTCView only after native WebRTC is available
         setRTCViewComponent(() => WebRTC.RTCView);
 
-        // =========================
         // OUTGOING CALL
-        // =========================
 
         if (!isIncoming) {
           const offer = await pc.createOffer();
@@ -198,9 +192,7 @@ export default function CallScreen() {
           });
         }
 
-        // =========================
         // INCOMING CALL
-        // =========================
 
         if (
           isIncoming &&
@@ -230,10 +222,16 @@ export default function CallScreen() {
           error
         );
 
-        if (Platform.OS === "ios" || Platform.OS === "android") {
-            Alert.alert(
-                "Call Error","Failed to start the call.");
-            }
+        if (
+          Platform.OS === "ios" ||
+          Platform.OS === "android"
+        ) {
+          Alert.alert(
+            "Call Error",
+            "Failed to start the call."
+          );
+        }
+
         router.back();
       }
     };
@@ -258,9 +256,7 @@ export default function CallScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // =========================
   // RECEIVE CALL ANSWER
-  // =========================
 
   useEffect(() => {
     if (
@@ -280,9 +276,7 @@ export default function CallScreen() {
       });
   }, [lastCallAnswer]);
 
-  // =========================
   // RECEIVE ICE CANDIDATE
-  // =========================
 
   useEffect(() => {
     if (
@@ -302,9 +296,7 @@ export default function CallScreen() {
       });
   }, [lastIceCandidate]);
 
-  // =========================
   // MUTE
-  // =========================
 
   const toggleMute = () => {
     if (!localStream) return;
@@ -319,9 +311,7 @@ export default function CallScreen() {
     setMuted((previous) => !previous);
   };
 
-  // =========================
   // CAMERA
-  // =========================
 
   const toggleCamera = () => {
     if (!localStream) return;
@@ -336,17 +326,13 @@ export default function CallScreen() {
     setCameraOn((previous) => !previous);
   };
 
-  // =========================
   // SPEAKER UI
-  // =========================
 
   const toggleSpeaker = () => {
     setSpeakerOn((previous) => !previous);
   };
 
-  // =========================
   // END CALL
-  // =========================
 
   const endCall = () => {
     try {
@@ -379,9 +365,7 @@ export default function CallScreen() {
     router.back();
   };
 
-  // =========================
   // WEB VERSION
-  // =========================
 
   if (Platform.OS === "web") {
     return (
@@ -426,9 +410,7 @@ export default function CallScreen() {
     );
   }
 
-  // =========================
   // LOADING
-  // =========================
 
   if (!partner) {
     return (
@@ -440,9 +422,7 @@ export default function CallScreen() {
     );
   }
 
-  // =========================
   // UI
-  // =========================
 
   return (
     <SafeAreaView style={styles.container}>

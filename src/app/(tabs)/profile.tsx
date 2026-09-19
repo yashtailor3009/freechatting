@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -45,43 +45,153 @@ export default function Profile() {
 
   const [loading, setLoading] = useState(false);
 
+  /*
+   * =========================================================
+   * SAVED AVATAR
+   * =========================================================
+   *
+   * This is the avatar coming from MongoDB / Cloudinary.
+   */
   const [savedAvatar, setSavedAvatar] = useState<string | null>(
     user?.avatar || null,
   );
 
-  const displayAvatar =
-    avatarUri || savedAvatar || user?.avatar || null;
+  /*
+   * =========================================================
+   * AVATAR CACHE VERSION
+   * =========================================================
+   *
+   * Used to prevent the browser / React Native Image cache
+   * from showing an older Cloudinary image.
+   */
+  const [avatarVersion, setAvatarVersion] = useState<number>(
+    Date.now(),
+  );
 
   /*
    * =========================================================
-   * SYNC PROFILE FORM WITH AUTH USER
+   * SAVE IN PROGRESS
+   * =========================================================
+   */
+  const saveInProgressRef = useRef(false);
+
+  /*
+   * =========================================================
+   * CREATE DISPLAY AVATAR URL
    * =========================================================
    *
-   * We intentionally do NOT call:
-   *
-   * GET /api/users/profile
-   *
-   * here.
-   *
-   * AppContext already has the authenticated user.
+   * Adding ?v=... forces the image URL to be treated as a
+   * fresh resource when the avatar changes.
+   */
+  const getAvatarUrl = (
+    uri: string | null,
+    version: number,
+  ) => {
+    if (!uri) {
+      return null;
+    }
+
+    const separator = uri.includes("?") ? "&" : "?";
+
+    return `${uri}${separator}v=${version}`;
+  };
+
+  /*
+   * Local selected image should be shown immediately.
+   * Otherwise show the MongoDB / Cloudinary avatar.
+   */
+  const displayAvatar =
+    avatarUri ||
+    getAvatarUrl(savedAvatar, avatarVersion) ||
+    null;
+
+  /*
+   * =========================================================
+   * LOAD PROFILE FROM DATABASE
+   * =========================================================
    */
   useEffect(() => {
     if (!auth.user) {
       return;
     }
 
-    setProfileName(auth.user.name || "");
-    setProfileHandle(auth.user.handle || "");
-    setProfileBio(auth.user.bio || "");
-    setSavedAvatar(auth.user.avatar || null);
-    setAvatarUri(null);
-  }, [auth.user]);
+    let cancelled = false;
 
-  /*
-   * =========================================================
-   * PICK AVATAR
-   * =========================================================
-   */
+    const loadProfile = async () => {
+      /*
+       * Load text fields immediately.
+       */
+      setProfileName(auth.user?.name || "");
+      setProfileHandle(auth.user?.handle || "");
+      setProfileBio(auth.user?.bio || "");
+
+      try {
+        const { data } = await api.get(
+          "/api/users/profile",
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        /*
+         * Do not allow an older GET request to overwrite
+         * the result while a save is running.
+         */
+        if (saveInProgressRef.current) {
+          return;
+        }
+
+        const dbUser = data?.user;
+
+        if (!dbUser) {
+          return;
+        }
+
+        /*
+         * MongoDB values are the source of truth.
+         */
+        setProfileName(
+          dbUser.name || auth.user?.name || "",
+        );
+
+        setProfileHandle(
+          dbUser.handle || auth.user?.handle || "",
+        );
+
+        setProfileBio(
+          dbUser.bio || auth.user?.bio || "",
+        );
+
+        /*
+         * MongoDB / Cloudinary avatar.
+         */
+        if (dbUser.avatar) {
+          setSavedAvatar(dbUser.avatar);
+
+          /*
+           * Generate a new cache-busting value.
+           */
+          setAvatarVersion(Date.now());
+        }
+      } catch (error: any) {
+        console.error(
+          "Failed to load profile:",
+          error?.response?.data ||
+            error?.message ||
+            error,
+        );
+      }
+    };
+
+    void loadProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [auth.user?._id, api]);
+
+  /* PICK AVATAR */
   const pickAvatar = async () => {
     const { status } =
       await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -124,26 +234,47 @@ export default function Profile() {
     }
 
     setLoading(true);
+    saveInProgressRef.current = true;
 
     try {
       const formData = new FormData();
 
-      formData.append("name", profileName.trim());
+      formData.append(
+        "name",
+        profileName.trim(),
+      );
+
       formData.append(
         "handle",
         profileHandle.trim().toLowerCase(),
       );
-      formData.append("bio", profileBio.trim());
 
+      formData.append(
+        "bio",
+        profileBio.trim(),
+      );
+
+      /*
+       * Add the newly selected image.
+       */
       if (avatarUri) {
         if (Platform.OS === "web") {
           const response = await fetch(avatarUri);
+
+          if (!response.ok) {
+            throw new Error("Failed to read selected image.");
+          }
+
           const blob = await response.blob();
+
+          const mimeType = blob.type || "image/jpeg";
+          const extension =
+            mimeType.split("/")[1] || "jpg";
 
           formData.append(
             "avatar",
             blob,
-            "avatar.jpg",
+            `avatar.${extension}`,
           );
         } else {
           formData.append(
@@ -158,10 +289,18 @@ export default function Profile() {
       }
 
       /*
-       * IMPORTANT:
-       * Leading "/" keeps the API path consistent.
-       * Axios interceptor in AppContext adds the Clerk token.
+       * Save profile to Render backend.
        */
+      /*
+       * IMPORTANT:
+       * Do not set Content-Type manually for FormData.
+       * Axios must generate the multipart boundary.
+       */
+      console.log(
+        "PROFILE SAVE - avatar selected:",
+        Boolean(avatarUri),
+      );
+
       const { data } = await api.put(
         "/api/users/profile",
         formData,
@@ -169,17 +308,40 @@ export default function Profile() {
 
       if (!data?.success) {
         throw new Error(
-          data?.message || "Failed to update profile",
+          data?.message ||
+            "Failed to update profile",
         );
       }
 
+      /*
+       * Update authenticated user.
+       */
       await updateUser(data.user);
 
+      /*
+       * IMPORTANT:
+       * Take avatar directly from the successful backend
+       * response and immediately update the profile image.
+       */
       if (data.user?.avatar) {
+        console.log(
+          "PROFILE SAVE - backend avatar:",
+          data.user.avatar,
+        );
+
         setSavedAvatar(data.user.avatar);
+
+        /*
+         * Generate a completely new cache-busting value.
+         */
+        setAvatarVersion(Date.now());
       }
 
+      /*
+       * Remove temporary local preview.
+       */
       setAvatarUri(null);
+
       setEditMode(false);
 
       Alert.alert(
@@ -189,7 +351,9 @@ export default function Profile() {
     } catch (error: any) {
       console.error(
         "Profile update error:",
-        error?.response?.data || error?.message || error,
+        error?.response?.data ||
+          error?.message ||
+          error,
       );
 
       Alert.alert(
@@ -199,6 +363,7 @@ export default function Profile() {
           "Failed to update profile",
       );
     } finally {
+      saveInProgressRef.current = false;
       setLoading(false);
     }
   };
@@ -268,12 +433,16 @@ export default function Profile() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Profile</Text>
+          <Text style={styles.title}>
+            Profile
+          </Text>
 
           {!editMode && (
             <TouchableOpacity
               style={styles.editBtn}
-              onPress={() => setEditMode(true)}
+              onPress={() =>
+                setEditMode(true)
+              }
             >
               <Ionicons
                 name="pencil"
@@ -292,21 +461,32 @@ export default function Profile() {
         <View style={styles.avatarSection}>
           <TouchableOpacity
             onPress={
-              editMode ? pickAvatar : undefined
+              editMode
+                ? pickAvatar
+                : undefined
             }
             activeOpacity={
               editMode ? 0.7 : 1
             }
           >
-            <View style={styles.avatarWrapper}>
+            <View
+              style={styles.avatarWrapper}
+            >
               <Avatar
                 name={user?.name || "?"}
-                src={displayAvatar || undefined}
+                src={
+                  displayAvatar ||
+                  undefined
+                }
                 size={100}
               />
 
               {editMode && (
-                <View style={styles.cameraOverlay}>
+                <View
+                  style={
+                    styles.cameraOverlay
+                  }
+                >
                   <Ionicons
                     name="camera"
                     size={22}
@@ -319,20 +499,28 @@ export default function Profile() {
 
           {!editMode && (
             <View style={styles.userInfo}>
-              <Text style={styles.userName}>
+              <Text
+                style={styles.userName}
+              >
                 {profileName}
               </Text>
 
-              <Text style={styles.userHandle}>
+              <Text
+                style={styles.userHandle}
+              >
                 @{profileHandle}
               </Text>
 
-              <Text style={styles.userEmail}>
+              <Text
+                style={styles.userEmail}
+              >
                 {user?.email}
               </Text>
 
               {user?.bio && (
-                <Text style={styles.userBio}>
+                <Text
+                  style={styles.userBio}
+                >
                   {profileBio}
                 </Text>
               )}
@@ -345,14 +533,18 @@ export default function Profile() {
           <View style={styles.form}>
             {/* Name */}
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>
+              <Text
+                style={styles.fieldLabel}
+              >
                 NAME
               </Text>
 
               <TextInput
                 style={styles.input}
                 value={profileName}
-                onChangeText={setProfileName}
+                onChangeText={
+                  setProfileName
+                }
                 placeholder="Your name"
                 placeholderTextColor={
                   Colors.outlineVariant
@@ -363,12 +555,18 @@ export default function Profile() {
 
             {/* Handle */}
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>
+              <Text
+                style={styles.fieldLabel}
+              >
                 HANDLE
               </Text>
 
-              <View style={styles.handleRow}>
-                <Text style={styles.atSign}>
+              <View
+                style={styles.handleRow}
+              >
+                <Text
+                  style={styles.atSign}
+                >
                   @
                 </Text>
 
@@ -382,7 +580,10 @@ export default function Profile() {
                     setProfileHandle(
                       value
                         .toLowerCase()
-                        .replace(/\s/g, ""),
+                        .replace(
+                          /\s/g,
+                          "",
+                        ),
                     )
                   }
                   placeholder="username"
@@ -397,7 +598,9 @@ export default function Profile() {
 
             {/* Bio */}
             <View style={styles.field}>
-              <Text style={styles.fieldLabel}>
+              <Text
+                style={styles.fieldLabel}
+              >
                 BIO
               </Text>
 
@@ -407,7 +610,9 @@ export default function Profile() {
                   styles.bioInput,
                 ]}
                 value={profileBio}
-                onChangeText={setProfileBio}
+                onChangeText={
+                  setProfileBio
+                }
                 placeholder="Tell us about yourself..."
                 placeholderTextColor={
                   Colors.outlineVariant
@@ -421,7 +626,9 @@ export default function Profile() {
             <TouchableOpacity
               onPress={saveProfile}
               disabled={loading}
-              style={styles.saveWrapper}
+              style={
+                styles.saveWrapper
+              }
               activeOpacity={0.88}
             >
               <LinearGradient
@@ -429,16 +636,28 @@ export default function Profile() {
                   Colors.primary,
                   Colors.primaryContainer,
                 ]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                start={{
+                  x: 0,
+                  y: 0,
+                }}
+                end={{
+                  x: 1,
+                  y: 1,
+                }}
                 style={styles.saveBtn}
               >
                 {loading ? (
                   <ActivityIndicator
-                    color={Colors.onPrimary}
+                    color={
+                      Colors.onPrimary
+                    }
                   />
                 ) : (
-                  <Text style={styles.saveBtnText}>
+                  <Text
+                    style={
+                      styles.saveBtnText
+                    }
+                  >
                     Save Changes
                   </Text>
                 )}
@@ -447,26 +666,34 @@ export default function Profile() {
 
             {/* Cancel */}
             <TouchableOpacity
-              style={styles.cancelBtn}
+              style={
+                styles.cancelBtn
+              }
               onPress={() => {
                 setEditMode(false);
                 setAvatarUri(null);
 
                 setProfileName(
-                  auth.user?.name || "",
+                  auth.user?.name ||
+                    "",
                 );
+
                 setProfileHandle(
-                  auth.user?.handle || "",
+                  auth.user?.handle ||
+                    "",
                 );
+
                 setProfileBio(
-                  auth.user?.bio || "",
-                );
-                setSavedAvatar(
-                  auth.user?.avatar || null,
+                  auth.user?.bio ||
+                    "",
                 );
               }}
             >
-              <Text style={styles.cancelBtnText}>
+              <Text
+                style={
+                  styles.cancelBtnText
+                }
+              >
                 Cancel
               </Text>
             </TouchableOpacity>
@@ -475,102 +702,162 @@ export default function Profile() {
 
         {/* Profile Options */}
         {!editMode && (
-          <View style={styles.optionsSection}>
+          <View
+            style={
+              styles.optionsSection
+            }
+          >
             <TouchableOpacity
               style={styles.optionRow}
             >
-              <View style={styles.optionIcon}>
+              <View
+                style={
+                  styles.optionIcon
+                }
+              >
                 <Ionicons
                   name="settings-outline"
                   size={20}
-                  color={Colors.onSurfaceVariant}
+                  color={
+                    Colors.onSurfaceVariant
+                  }
                 />
               </View>
 
-              <Text style={styles.optionText}>
+              <Text
+                style={
+                  styles.optionText
+                }
+              >
                 Setting
               </Text>
 
               <Ionicons
                 name="chevron-forward"
                 size={16}
-                color={Colors.outlineVariant}
+                color={
+                  Colors.outlineVariant
+                }
               />
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.optionRow}
             >
-              <View style={styles.optionIcon}>
+              <View
+                style={
+                  styles.optionIcon
+                }
+              >
                 <Ionicons
                   name="notifications-outline"
                   size={20}
-                  color={Colors.onSurfaceVariant}
+                  color={
+                    Colors.onSurfaceVariant
+                  }
                 />
               </View>
 
-              <Text style={styles.optionText}>
+              <Text
+                style={
+                  styles.optionText
+                }
+              >
                 Notifications
               </Text>
 
               <Ionicons
                 name="chevron-forward"
                 size={16}
-                color={Colors.outlineVariant}
+                color={
+                  Colors.outlineVariant
+                }
               />
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.optionRow}
             >
-              <View style={styles.optionIcon}>
+              <View
+                style={
+                  styles.optionIcon
+                }
+              >
                 <Ionicons
                   name="lock-closed-outline"
                   size={20}
-                  color={Colors.onSurfaceVariant}
+                  color={
+                    Colors.onSurfaceVariant
+                  }
                 />
               </View>
 
-              <Text style={styles.optionText}>
+              <Text
+                style={
+                  styles.optionText
+                }
+              >
                 Privacy & Security
               </Text>
 
               <Ionicons
                 name="chevron-forward"
                 size={16}
-                color={Colors.outlineVariant}
+                color={
+                  Colors.outlineVariant
+                }
               />
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.optionRow}
             >
-              <View style={styles.optionIcon}>
+              <View
+                style={
+                  styles.optionIcon
+                }
+              >
                 <Ionicons
                   name="help-circle-outline"
                   size={20}
-                  color={Colors.onSurfaceVariant}
+                  color={
+                    Colors.onSurfaceVariant
+                  }
                 />
               </View>
 
-              <Text style={styles.optionText}>
+              <Text
+                style={
+                  styles.optionText
+                }
+              >
                 Help & Support
               </Text>
 
               <Ionicons
                 name="chevron-forward"
                 size={16}
-                color={Colors.outlineVariant}
+                color={
+                  Colors.outlineVariant
+                }
               />
             </TouchableOpacity>
           </View>
         )}
 
         {/* Sign Out */}
-        <View style={styles.signOutSection}>
+        <View
+          style={
+            styles.signOutSection
+          }
+        >
           <TouchableOpacity
-            style={styles.signOutBtn}
-            onPress={handleLogout}
+            style={
+              styles.signOutBtn
+            }
+            onPress={
+              handleLogout
+            }
           >
             <Ionicons
               name="log-out-outline"
@@ -578,7 +865,11 @@ export default function Profile() {
               color={Colors.error}
             />
 
-            <Text style={styles.signOutText}>
+            <Text
+              style={
+                styles.signOutText
+              }
+            >
               Sign Out
             </Text>
           </TouchableOpacity>
